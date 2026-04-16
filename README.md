@@ -22,7 +22,7 @@ CEBRA's native conditionals (`time`, `delta`, `time_delta`) operate over a flat 
 ## Installation
 
 ```bash
-pip install -e .
+pip install trial_cebra
 ```
 
 Requires `cebra >= 0.4` and `torch`.
