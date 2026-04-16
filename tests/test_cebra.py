@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 import torch
 
-from cebra_trial import TrialCEBRA
-from cebra_trial.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
+from trial_cebra import TrialCEBRA
+from trial_cebra.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
 
 # ---------------------------------------------------------------------------
 # Fixtures

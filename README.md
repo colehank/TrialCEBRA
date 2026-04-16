@@ -15,7 +15,7 @@ CEBRA's native conditionals (`time`, `delta`, `time_delta`) operate over a flat 
 1. **Temporal boundary artifacts** — a 1-D CNN convolves across trial boundaries, mixing pre- and post-stimulus activity.
 2. **Flat sampling ignores trial structure** — `delta` finds the nearest-neighbor timepoint in stimulus space; when all timepoints within a trial share the same stimulus embedding, this collapses to intra-trial sampling with no cross-trial signal.
 
-`cebra_trial` solves both by lifting the positive-pair selection from the *timepoint* level to the *trial* level.
+`trial_cebra` solves both by lifting the positive-pair selection from the *timepoint* level to the *trial* level.
 
 ---
 
@@ -33,7 +33,7 @@ Requires `cebra >= 0.4` and `torch`.
 
 ```python
 import numpy as np
-from cebra_trial import TrialCEBRA
+from trial_cebra import TrialCEBRA
 
 # Neural data: (N_timepoints, neural_dim)
 X = np.random.randn(2000, 64).astype(np.float32)
@@ -259,7 +259,7 @@ model.distribution_                # TrialAwareDistribution instance (after fit)
 The sampling distribution; can be used standalone for diagnostics.
 
 ```python
-from cebra_trial import TrialAwareDistribution
+from trial_cebra import TrialAwareDistribution
 import torch
 
 dist = TrialAwareDistribution(
@@ -282,7 +282,7 @@ ref, pos = dist.sample_joint(num_samples=64)
 Low-level PyTorch dataset with trial metadata, for use outside the sklearn interface.
 
 ```python
-from cebra_trial import TrialTensorDataset
+from trial_cebra import TrialTensorDataset
 
 dataset = TrialTensorDataset(
     neural       = neural_tensor,     # (N, D)
@@ -317,7 +317,7 @@ When both discrete and continuous labels are provided, CEBRA's internal routing 
 ## Project Structure
 
 ```
-src/cebra_trial/
+src/trial_cebra/
   __init__.py          # public API: TrialCEBRA, TrialTensorDataset, TrialAwareDistribution
   cebra.py             # TrialCEBRA sklearn estimator
   dataset.py           # TrialTensorDataset (PyTorch API)

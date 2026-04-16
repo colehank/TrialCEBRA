@@ -1,4 +1,4 @@
-"""Shared test fixtures for cebra_trial tests."""
+"""Shared test fixtures for trial_cebra tests."""
 
 import torch
 

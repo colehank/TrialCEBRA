@@ -1,11 +1,11 @@
-"""cebra_trial: Trial-aware contrastive learning wrapper for CEBRA.
+"""trial_cebra: Trial-aware contrastive learning wrapper for CEBRA.
 
 Provides trial-aware extensions to the official CEBRA package without
 modifying CEBRA's source code.
 
 Usage::
 
-    from cebra_trial import TrialCEBRA
+    from trial_cebra import TrialCEBRA
 
     model = TrialCEBRA(
         conditional="trial_delta",
@@ -18,9 +18,9 @@ Usage::
     embeddings = model.transform(X)
 """
 
-from cebra_trial.cebra import TrialCEBRA
-from cebra_trial.dataset import TrialTensorDataset
-from cebra_trial.distribution import TrialAwareDistribution
+from trial_cebra.cebra import TrialCEBRA
+from trial_cebra.dataset import TrialTensorDataset
+from trial_cebra.distribution import TrialAwareDistribution
 
 __all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution"]
 __version__ = "0.1.0"

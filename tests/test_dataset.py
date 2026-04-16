@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 import torch
 
-from cebra_trial.dataset import TrialTensorDataset
+from trial_cebra.dataset import TrialTensorDataset
 
 
 class TestTrialTensorDatasetInit:

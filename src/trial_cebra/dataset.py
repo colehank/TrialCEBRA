@@ -18,7 +18,7 @@ class TrialTensorDataset(cebra.data.TensorDataset):
 
     Extends :py:class:`cebra.data.TensorDataset` with trial boundary
     information. This enables hierarchical trial-aware sampling via
-    :py:class:`cebra_trial.distribution.TrialAwareDistribution`.
+    :py:class:`trial_cebra.distribution.TrialAwareDistribution`.
 
     Args:
         neural: Array of shape ``(N, D)`` containing neural activity.

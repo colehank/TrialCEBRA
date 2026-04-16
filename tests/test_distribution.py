@@ -4,7 +4,7 @@ import pytest
 import torch
 from conftest import make_trial_data
 
-from cebra_trial.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
+from trial_cebra.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
 
 # ---------------------------------------------------------------------------
 # Helpers

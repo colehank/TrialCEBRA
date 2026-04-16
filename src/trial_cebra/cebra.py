@@ -7,7 +7,7 @@ The key technique is "post-replace distribution": the official CEBRA
 pipeline creates a standard ``ContinuousDataLoader`` (or
 ``MixedDataLoader`` when a discrete index is present), then its
 ``distribution`` attribute is replaced in-place with a
-:py:class:`~cebra_trial.distribution.TrialAwareDistribution`.
+:py:class:`~trial_cebra.distribution.TrialAwareDistribution`.
 Both loader types call only ``distribution.sample_prior`` and
 ``distribution.sample_conditional`` inside ``get_indices``, so the
 replacement is fully transparent to the training loop.
@@ -39,7 +39,7 @@ import numpy as np
 import numpy.typing as npt
 import torch
 
-from cebra_trial.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
+from trial_cebra.distribution import TRIAL_CONDITIONALS, TrialAwareDistribution
 
 
 class TrialCEBRA(cebra.CEBRA):
@@ -79,7 +79,7 @@ class TrialCEBRA(cebra.CEBRA):
     Example::
 
         >>> import numpy as np
-        >>> from cebra_trial import TrialCEBRA
+        >>> from trial_cebra import TrialCEBRA
         >>> X = np.random.randn(500, 30).astype(np.float32)
         >>> y = np.random.randn(500, 10).astype(np.float32)
         >>> trial_starts = np.array([i * 50 for i in range(10)])
@@ -178,7 +178,7 @@ class TrialCEBRA(cebra.CEBRA):
            ``ContinuousDataLoader`` or ``MixedDataLoader``.
         2. Restore the original conditional name.
         3. Replace ``loader.distribution`` with a
-           :py:class:`~cebra_trial.distribution.TrialAwareDistribution`.
+           :py:class:`~trial_cebra.distribution.TrialAwareDistribution`.
 
         For native CEBRA conditionals, the call is forwarded unchanged.
         """
