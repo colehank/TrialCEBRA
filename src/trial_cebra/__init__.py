@@ -23,4 +23,4 @@ from trial_cebra.dataset import TrialTensorDataset
 from trial_cebra.distribution import TrialAwareDistribution
 
 __all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution"]
-__version__ = "0.1.2"
+__version__ = "0.1.3"

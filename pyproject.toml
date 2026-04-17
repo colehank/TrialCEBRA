@@ -1,6 +1,6 @@
 [project]
 name = "trial_cebra"
-version = "0.1.2"
+version = "0.1.3"
 description = "Trial-aware contrastive learning wrapper for CEBRA"
 readme = "README.md"
 requires-python = ">=3.10"
