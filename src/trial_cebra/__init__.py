@@ -23,4 +23,9 @@ from trial_cebra.dataset import TrialTensorDataset
 from trial_cebra.distribution import TrialAwareDistribution
 
 __all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution"]
-__version__ = "0.1.3"
+
+from importlib.metadata import version, PackageNotFoundError
+try:
+    __version__ = version("trial_cebra")
+except PackageNotFoundError:
+    __version__ = "unknown"
