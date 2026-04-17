@@ -338,10 +338,26 @@ resources/             # example 脚本生成的可视化图片
 
 ---
 
-## 运行测试
+## 参与贡献
+
+**首次配置**（克隆仓库后运行一次）：
 
 ```bash
-pytest tests/ -v
+uv sync --dev
+uv run pre-commit install
+uv run pre-commit install --hook-type pre-push
 ```
 
-113 个测试全部通过。Pre-commit hooks（ruff lint/format + pytest）已在 `.pre-commit-config.yaml` 中配置。
+**自动触发的检查：**
+
+| 事件 | 检查内容 |
+|---|---|
+| `git commit` | ruff lint + format（自动修复文件；若有修改则重新 `git add` 后再提交） |
+| `git push` | `pytest tests/ -v` |
+
+**发布新版本** —— 版本号从 git tag 自动读取，无需修改任何文件：
+
+```bash
+git tag v0.x.x
+git push origin v0.x.x   # 触发构建并发布到 PyPI
+```
