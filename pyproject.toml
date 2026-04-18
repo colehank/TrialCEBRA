@@ -3,7 +3,7 @@ requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
-name = "trialCEBRA"
+name = "TrialCEBRA"
 dynamic = ["version"]
 description = "Trial-aware contrastive learning wrapper for CEBRA"
 readme = "README.md"

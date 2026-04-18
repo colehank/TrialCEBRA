@@ -29,7 +29,7 @@ CEBRA's native conditionals (`time`, `delta`, `time_delta`) operate over a flat 
 **Step 2 — Install TrialCEBRA:**
 
 ```bash
-pip install trialCEBRA
+pip install TrialCEBRA
 ```
 
 ---
