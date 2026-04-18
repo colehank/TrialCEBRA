@@ -21,11 +21,7 @@ Usage::
 from trial_cebra.cebra import TrialCEBRA
 from trial_cebra.dataset import TrialTensorDataset
 from trial_cebra.distribution import TrialAwareDistribution
+from trial_cebra.epochs import flatten_epochs
 
-__all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution"]
-
-from importlib.metadata import version, PackageNotFoundError
-try:
-    __version__ = version("trial_cebra")
-except PackageNotFoundError:
-    __version__ = "unknown"
+__all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution", "flatten_epochs"]
+__version__ = "0.1.0"

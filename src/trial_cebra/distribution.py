@@ -184,7 +184,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
 
     def __init__(
         self,
-        continuous: torch.Tensor,
+        continuous: Optional[torch.Tensor],
         trial_starts: torch.Tensor,
         trial_ends: torch.Tensor,
         conditional: str,
@@ -202,9 +202,14 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
                 f"Unknown conditional: {conditional!r}. "
                 f"Must be one of {sorted(TRIAL_CONDITIONALS)}."
             )
+        if continuous is None and conditional in _NEEDS_SIMILARITY:
+            raise ValueError(
+                f"conditional='{conditional}' requires continuous labels for "
+                "trial similarity matching.  Use 'trialTime' for discrete-only data."
+            )
 
         # --- Core attributes ---
-        self.continuous = continuous.to(device)
+        self.continuous = continuous.to(device) if continuous is not None else None
         self.trial_starts = trial_starts.long().to(device)
         self.trial_ends = trial_ends.long().to(device)
         self.conditional = conditional
@@ -241,7 +246,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             self.discrete = None
 
         # --- Timepoint → trial mapping (-1 for gap timepoints) ---
-        N = len(self.continuous)
+        N = len(self.continuous) if self.continuous is not None else int(self.trial_ends.max())
         self.timepoint_to_trial = torch.full((N,), -1, dtype=torch.long, device=device)
         for t in range(self.num_trials):
             s, e = int(self.trial_starts[t]), int(self.trial_ends[t])
@@ -305,7 +310,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             Integer tensor of shape ``(num_samples,)``.
         """
         if self.discrete is None:
-            N = len(self.continuous)
+            N = len(self.continuous) if self.continuous is not None else int(self.trial_ends.max())
             return self.randint(0, N, (num_samples,))
         return self._discrete_prior.sample_prior(num_samples).to(self.device)
 
@@ -632,7 +637,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         of its discrete class, so the encoder clusters the entire gap period
         into one region rather than preserving intra-gap temporal structure.
         """
-        N = len(self.continuous)
+        N = len(self.continuous) if self.continuous is not None else int(self.trial_ends.max())
 
         if self.discrete is None:
             low = torch.clamp(ref_idx - self.time_offset, min=0)

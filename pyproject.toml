@@ -22,7 +22,6 @@ packages = ["src/trial_cebra"]
 dev = [
     "hatch-vcs>=0.4",
     "ipykernel>=7.2.0",
-    "pre-commit>=3.5",
     "pytest>=8.0",
     "ruff>=0.9",
 ]

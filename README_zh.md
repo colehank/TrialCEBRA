@@ -59,6 +59,31 @@ model.fit(X, y_cont, trial_starts=trial_starts, trial_ends=trial_ends)
 embeddings = model.transform(X)   # (N_timepoints, 3)
 ```
 
+### Epoch 格式（ntrial × ntime × nneuro）
+
+若数据已按 trial 组织为三维数组，可直接传入——trial 边界自动推导，无需手动指定：
+
+```python
+# Epoch 数据: (ntrial, ntime, nneuro)
+X_ep = np.random.randn(40, 50, 64).astype(np.float32)
+
+# 标签可以是 per-trial 或 per-timepoint：
+y_pertrial     = np.random.randn(40, 16).astype(np.float32)        # (ntrial, stim_dim)
+y_pertimepoint = np.random.randn(40, 50, 16).astype(np.float32)    # (ntrial, ntime, stim_dim)
+
+model.fit(X_ep, y_pertrial)          # 自动识别 3D，无需 trial_starts/ends
+emb = model.transform_epochs(X_ep)   # (ntrial, ntime, output_dimension)
+```
+
+3D 输入时标签广播规则：
+
+| 标签形状 | 解释 | 输出形状 |
+|---|---|---|
+| `(ntrial,)` | per-trial 离散 | `(ntrial*ntime,)` |
+| `(ntrial, d)`，`d ≠ ntime` | per-trial 连续 | `(ntrial*ntime, d)` |
+| `(ntrial, ntime)` | per-timepoint | `(ntrial*ntime,)` |
+| `(ntrial, ntime, d)` | per-timepoint | `(ntrial*ntime, d)` |
+
 ---
 
 ## Conditional 体系
@@ -224,6 +249,19 @@ for s, e in zip(trial_starts, trial_ends):
 model.fit(X, y_cont, y_disc, trial_starts=trial_starts, trial_ends=trial_ends)
 ```
 
+### 仅离散标签（无连续标签）
+
+仅传入离散标签（int 数组，无 float 数组）时，支持 `"trialTime"` conditional。模型从同类别的另一个 trial 中随机选取正样本，并在 ±`time_offsets` 时间窗内采样。
+
+```python
+y_disc = np.zeros(ntrial, dtype=np.int64)   # per-trial 标签（epoch 格式）
+y_disc[ntrial // 2:] = 1
+
+model.fit(X_ep, y_disc)   # X_ep: (ntrial, ntime, nneuro)
+```
+
+Delta-style conditional（`trialDelta`、`trial_delta`、`trialTime_delta`、`trialTime_trialDelta`）需要连续标签计算 trial 相似度，仅传离散标签时会抛出 `ValueError`。
+
 ---
 
 ## API 参考
@@ -240,6 +278,7 @@ TrialCEBRA(
     **cebra_kwargs,
 )
 
+# 扁平格式
 model.fit(
     X,                              # (N, input_dim) 神经数据
     *y,                             # 连续和/或离散标签
@@ -250,8 +289,15 @@ model.fit(
     callback_frequency: int = None,
 ) -> TrialCEBRA
 
-model.transform(X) -> np.ndarray   # (N, output_dimension)
-model.distribution_                # 训练后可访问的 TrialAwareDistribution 实例
+# Epoch 格式 —— trial 边界自动推导
+model.fit(
+    X,                              # (ntrial, ntime, nneuro) epoch 数组
+    *y,                             # per-trial 或 per-timepoint 标签
+) -> TrialCEBRA
+
+model.transform(X)         -> np.ndarray   # (N, output_dimension)
+model.transform_epochs(X)  -> np.ndarray   # (ntrial, ntime, output_dimension)
+model.distribution_                        # 训练后可访问的 TrialAwareDistribution 实例
 ```
 
 ### `TrialAwareDistribution`
@@ -318,16 +364,18 @@ dataset = TrialTensorDataset(
 
 ```
 src/trial_cebra/
-  __init__.py          # 公开 API：TrialCEBRA, TrialTensorDataset, TrialAwareDistribution
+  __init__.py          # 公开 API：TrialCEBRA, TrialTensorDataset, TrialAwareDistribution, flatten_epochs
   cebra.py             # TrialCEBRA sklearn 估计器
   dataset.py           # TrialTensorDataset（PyTorch API）
   distribution.py      # TrialAwareDistribution（5 种 conditional 全部实现）
+  epochs.py            # flatten_epochs（epoch 格式数据工具函数）
 
 tests/
   conftest.py
   test_cebra.py
   test_dataset.py
   test_distribution.py
+  test_epochs.py
 
 resources/             # example 脚本生成的可视化图片
   fig_trial_sampling.png
@@ -340,20 +388,18 @@ resources/             # example 脚本生成的可视化图片
 
 ## 参与贡献
 
-**首次配置**（克隆仓库后运行一次）：
+**配置环境**（克隆仓库后运行一次）：
 
 ```bash
 uv sync --dev
-uv run pre-commit install
-uv run pre-commit install --hook-type pre-push
 ```
 
-**自动触发的检查：**
+**CI 检查**（push 到 main 时自动运行）：
 
-| 事件 | 检查内容 |
+| 检查 | 命令 |
 |---|---|
-| `git commit` | ruff lint + format（自动修复文件；若有修改则重新 `git add` 后再提交） |
-| `git push` | `pytest tests/ -v` |
+| Lint + 格式 | `ruff check . && ruff format --check .` |
+| 测试 | `pytest tests/ -v` |
 
 **发布新版本** —— 版本号从 git tag 自动读取，无需修改任何文件：
 
