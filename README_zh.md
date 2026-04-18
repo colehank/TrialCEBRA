@@ -167,7 +167,7 @@ target_trial = argmin_j  dist(query, trial_mean[j])
 各 conditional 的正样本分布特征一目了然：
 
 - **`trialTime`**（左上）—— 正样本来自均匀随机的目标 trial，时间位置对齐到 anchor 的相对位置附近。图像网格多样，无刺激相似度偏好。
-- **`trialDelta`**（中上）—— 正样本集中在**固定的单个**目标 trial（由刺激相似度在 init 时锁定）。所有正样本图像相同（牛头梗），印证了 `ref_trial → target_trial` 的固定映射。
+- **`trialDelta`**（中上）—— 正样本集中在**固定的单个**目标 trial（由刺激相似度在 init 时锁定）。所有正样本图像相同（小狗），印证了 `ref_trial → target_trial` 的固定映射。
 - **`trial_delta`**（右上）—— 目标 trial 每步重采样。正样本跨越多个相似刺激，内容一致性高于随机，多样性高于 `trialDelta`。
 - **`trialTime_delta`**（左下）—— trial 选取多样性与 `trial_delta` 相同，额外叠加 ±`time_offset` 时间窗约束，从 colorbar 可见正样本时间分布更紧凑。
 - **`trialTime_trialDelta`**（中下）—— 固定目标 trial（同 `trialDelta`）加时间窗，正样本集中在特定刺激图像和特定 post-stimulus 潜伏期。
@@ -226,7 +226,7 @@ Trial 边界之间的时间点作为**合法 anchor** 参与训练，各 conditi
 | `trialTime_delta` | 时间点级 delta-style |
 | `trialTime_trialDelta` | 时间点级 time_delta-style |
 
-**推荐做法**：传入离散标签区分 trial 与 gap��如 `0 = gap`、`1 = trial`）。有离散标签时，`trialTime` 的 gap 策略从局部 ±窗口切换为**全类均匀采样**（Gumbel-max trick），迫使所有 gap 时间点在嵌入空间全局聚集，而非在 gap 内部保留时间链结构。
+**推荐做法**：传入离散标签区分 trial 与 gap如 `0 = gap`、`1 = trial`）。有离散标签时，`trialTime` 的 gap 策略从局部 ±窗口切换为**全类均匀采样**（Gumbel-max trick），迫使所有 gap 时间点在嵌入空间全局聚集，而非在 gap 内部保留时间链结构。
 
 ---
 

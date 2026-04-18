@@ -169,7 +169,7 @@ The figures below are produced by `example/viz_trial_sampling.py` and `example/d
 Each row shows a different conditional. Notice how positive samples differ in both stimulus content and time position depending on the mode:
 
 - **`trialTime`** (top-left) — positives come from a uniformly random other trial, centred near the anchor's relative time position. The stimulus grid is diverse with no bias toward similar images.
-- **`trialDelta`** (top-center) — positives cluster around a single *locked* target trial chosen by stimulus similarity. All positive frames show the same image (the bull terrier), confirming the fixed `ref_trial → target_trial` mapping.
+- **`trialDelta`** (top-center) — positives cluster around a single *locked* target trial chosen by stimulus similarity. All positive frames show the same image (puppy), confirming the fixed `ref_trial → target_trial` mapping.
 - **`trial_delta`** (top-right) — the target trial is re-sampled every step. Positive frames spread across several similar stimuli while maintaining content coherence, achieving higher diversity than `trialDelta`.
 - **`trialTime_delta`** (bottom-left) — same trial-selection diversity as `trial_delta`, but the time window is additionally constrained to ±`time_offset` ms of the anchor's relative position, visible as the tighter in-trial time spread in the colorbar.
 - **`trialTime_trialDelta`** (bottom-center) — locked target trial (like `trialDelta`) combined with the ±`time_offset` window. Positives concentrate on a single stimulus image at a specific post-stimulus latency.
