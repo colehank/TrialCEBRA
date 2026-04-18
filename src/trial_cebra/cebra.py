@@ -226,9 +226,7 @@ class TrialCEBRA(cebra.CEBRA):
         """
         X = np.asarray(X)
         if X.ndim != 3:
-            raise ValueError(
-                f"X must be 3-D (ntrial, ntime, nneuro), got shape {X.shape}"
-            )
+            raise ValueError(f"X must be 3-D (ntrial, ntime, nneuro), got shape {X.shape}")
         ntrial, ntime, _ = X.shape
         emb = self.transform(X.reshape(ntrial * ntime, -1))
         return emb.reshape(ntrial, ntime, -1)

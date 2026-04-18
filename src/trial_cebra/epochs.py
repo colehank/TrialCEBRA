@@ -45,9 +45,7 @@ def flatten_epochs(
     """
     X = np.asarray(X)
     if X.ndim != 3:
-        raise ValueError(
-            f"X must be 3-D (ntrial, ntime, nneuro), got shape {X.shape}"
-        )
+        raise ValueError(f"X must be 3-D (ntrial, ntime, nneuro), got shape {X.shape}")
     ntrial, ntime, nneuro = X.shape
 
     X_flat = X.reshape(ntrial * ntime, nneuro)
@@ -77,13 +75,9 @@ def flatten_epochs(
                 )
         elif yi.ndim == 3:
             if yi.shape[:2] != (ntrial, ntime):
-                raise ValueError(
-                    f"y[{i}] has shape {yi.shape}; expected ({ntrial}, {ntime}, d)"
-                )
+                raise ValueError(f"y[{i}] has shape {yi.shape}; expected ({ntrial}, {ntime}, d)")
             y_flat.append(yi.reshape(ntrial * ntime, yi.shape[2]))
         else:
-            raise ValueError(
-                f"y[{i}] must be 1-D, 2-D, or 3-D, got {yi.ndim}-D array"
-            )
+            raise ValueError(f"y[{i}] must be 1-D, 2-D, or 3-D, got {yi.ndim}-D array")
 
     return X_flat, tuple(y_flat), trial_starts, trial_ends
