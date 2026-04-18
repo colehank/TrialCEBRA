@@ -9,3 +9,7 @@ wheels/
 # Virtual environments
 .venv
 example/
+.claude/
+.*_cache/
+uv.toml
+.benchmarks/

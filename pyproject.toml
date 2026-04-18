@@ -9,7 +9,7 @@ description = "Trial-aware contrastive learning wrapper for CEBRA"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "cebra"
+    "cebra",
 ]
 
 [tool.hatch.version]
@@ -22,6 +22,7 @@ packages = ["src/trial_cebra"]
 dev = [
     "hatch-vcs>=0.4",
     "ipykernel>=7.2.0",
+    "pre-commit>=4.0",
     "pytest>=8.0",
     "ruff>=0.9",
 ]
@@ -36,3 +37,6 @@ ignore = ["E501"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore::DeprecationWarning:torch.jit",
+]

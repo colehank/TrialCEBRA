@@ -1,10 +1,10 @@
 # TrialCEBRA
-
+*[中文](README_zh.md)*  
 **Trial-aware contrastive learning for CEBRA** — a wrapper library that adds five trial-structured sampling conditionals to [CEBRA](https://cebra.ai) without modifying its source code.
 
 Designed for neuroscience experiments where neural recordings are organized as repeated trials (stimuli, conditions, epochs), this library enables hierarchical positive-pair sampling: first select a *target trial* based on stimulus similarity or at random, then draw a positive timepoint within that trial.
 
-**[中文文档 README\_zh.md](README_zh.md)**
+
 
 ---
 

@@ -1,10 +1,8 @@
 # TrialCEBRA
-
+*[English](README.md)*  
 **为 CEBRA 提供 trial 感知对比学习** —— 在不修改 CEBRA 源代码的前提下，为其添加五种面向试次结构的采样模式。
 
 适用于神经科学实验中以重复试次（trial）为单位组织的神经记录数据（刺激呈现、条件实验、epoch 数据）。核心思想是将正样本对的选取从"时间点级"提升到"试次级"：先按刺激相似度或均匀随机选择目标 trial，再在目标 trial 内采样正样本时间点。
-
-**[English README](README.md)**
 
 ---
 
@@ -392,6 +390,7 @@ resources/             # example 脚本生成的可视化图片
 
 ```bash
 uv sync --dev
+uv run pre-commit install --hook-type pre-commit --hook-type pre-push
 ```
 
 **CI 检查**（push 到 main 时自动运行）：
