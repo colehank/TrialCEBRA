@@ -18,10 +18,16 @@ Usage::
     embeddings = model.transform(X)
 """
 
+from importlib.metadata import PackageNotFoundError, version
+
 from trial_cebra.cebra import TrialCEBRA
 from trial_cebra.dataset import TrialTensorDataset
 from trial_cebra.distribution import TrialAwareDistribution
 from trial_cebra.epochs import flatten_epochs
 
 __all__ = ["TrialCEBRA", "TrialTensorDataset", "TrialAwareDistribution", "flatten_epochs"]
-__version__ = "0.1.0"
+
+try:
+    __version__ = version("TrialCEBRA")
+except PackageNotFoundError:
+    __version__ = "unknown"
