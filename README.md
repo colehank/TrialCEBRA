@@ -1,9 +1,8 @@
 # TrialCEBRA
 *[中文](README_zh.md)*
 
-[![PyPI](https://img.shields.io/pypi/v/trialcebra?color=blue)](https://pypi.org/project/trialCEBRA/)
-[![Python](https://img.shields.io/pypi/pyversions/trialcebra)](https://pypi.org/project/trialCEBRA/)
-[![Tests](https://github.com/colehank/trialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/trialCEBRA/actions)
+[![PyPI](https://img.shields.io/pypi/v/TrialCEBRA?color=blue)](https://pypi.org/project/TrialCEBRA/)
+[![Tests](https://github.com/colehank/TrialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/TrialCEBRA/actions)
 
 **Trial-aware contrastive learning for CEBRA** — a wrapper that adds five trial-structured sampling conditionals to [CEBRA](https://cebra.ai) without modifying its source code.
 

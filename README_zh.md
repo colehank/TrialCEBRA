@@ -1,9 +1,8 @@
 # TrialCEBRA
 *[English](README.md)*
 
-[![PyPI](https://img.shields.io/pypi/v/trialcebra?color=blue)](https://pypi.org/project/trialCEBRA/)
-[![Python](https://img.shields.io/pypi/pyversions/trialcebra)](https://pypi.org/project/trialCEBRA/)
-[![Tests](https://github.com/colehank/trialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/trialCEBRA/actions)
+[![PyPI](https://img.shields.io/pypi/v/TrialCEBRA?color=blue)](https://pypi.org/project/TrialCEBRA/)
+[![Tests](https://github.com/colehank/TrialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/TrialCEBRA/actions)
 
 **为 CEBRA 提供 trial 感知对比学习** —— 在不修改 CEBRA 源代码的前提下，为其添加五种面向试次结构的采样模式。
 
