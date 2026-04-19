@@ -1,8 +1,8 @@
 # TrialCEBRA
-*[中文](README_zh.md)*
-
 [![PyPI](https://img.shields.io/pypi/v/TrialCEBRA?color=blue)](https://pypi.org/project/TrialCEBRA/)
-[![Tests](https://github.com/colehank/TrialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/TrialCEBRA/actions)
+[![Tests](https://github.com/colehank/TrialCEBRA/actions/workflows/tests.yml/badge.svg)](https://github.com/colehank/TrialCEBRA/actions)  
+
+*[中文](README_zh.md)*
 
 **Trial-aware contrastive learning for CEBRA** — a wrapper that adds five trial-structured sampling conditionals to [CEBRA](https://cebra.ai) without modifying its source code.
 
@@ -11,14 +11,13 @@ Designed for neuroscience experiments where neural recordings are organized as r
 ---
 
 ## Background
-
+![Sampling schema](resources/sampling_schema.png)
 CEBRA's native conditionals (`time`, `delta`, `time_delta`) operate over a flat sequence of timepoints. For trial-structured data they have two limitations:
 
 1. **Temporal boundary artifacts** — a 1-D CNN convolves across trial boundaries, mixing pre- and post-stimulus activity.
 2. **Flat sampling ignores trial structure** — `delta` finds the nearest-neighbor timepoint in stimulus space; when all timepoints within a trial share the same stimulus embedding, this collapses to intra-trial sampling with no cross-trial signal.
 
 `trial_cebra` solves both by lifting positive-pair selection to the *trial* level.
-
 ---
 
 ## Installation

@@ -11,6 +11,7 @@
 ---
 
 ## 背景
+![Sampling schema](resources/sampling_schema.png)
 
 CEBRA 原生的三种 conditional（`time`、`delta`、`time_delta`）均在扁平时间序列上操作，面对试次结构数据存在两个问题：
 
