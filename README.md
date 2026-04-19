@@ -18,6 +18,7 @@ CEBRA's native conditionals (`time`, `delta`, `time_delta`) operate over a flat 
 2. **Flat sampling ignores trial structure** — `delta` finds the nearest-neighbor timepoint in stimulus space; when all timepoints within a trial share the same stimulus embedding, this collapses to intra-trial sampling with no cross-trial signal.
 
 `trial_cebra` solves both by lifting positive-pair selection to the *trial* level.
+
 ---
 
 ## Installation
