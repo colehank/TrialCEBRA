@@ -51,9 +51,9 @@ Discrete-first class-conditional trial selection (``"delta"`` only):
   * **Mode B** — per-timepoint discrete + 3-D ``y``: a class-conditional
     trial embedding ``trial_emb_per_class[c][trial] = mean(y[trial, t]
     for t where class(trial, t) == c)`` is used as the query basis.
-  * **Mode C** — per-timepoint discrete + 2-D ``y``: not decomposable;
-    a warning is emitted and trial selection falls back to class-agnostic
-    ``trial_emb`` (same-class still applied at the positive-sampling stage).
+  * **Mode C** — per-timepoint discrete + 2-D ``y``: the 2-D ``y`` is
+    automatically broadcast to ``(ntrial, ntime, nd)`` and Mode B aggregation
+    is applied. No warning is emitted.
 
   A tiny Gumbel perturbation is added before ``argmin`` to break ties
   stochastically (needed when all class-c trial embeddings are identical,

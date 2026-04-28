@@ -17,8 +17,9 @@ Implements CEBRA's cross-session alignment philosophy on top of
 Conditionals:
 
 * ``"delta"`` — full support (Mode A / Mode B / no-discrete).  Mode C
-  (per-timepoint y_discrete with only 2-D y_continuous) is **rejected** at
-  init — pass 3-D y_continuous for class-conditional trial selection.
+  (``_DISC_MODE_PER_TP_2D``) cannot be reached via normal init because 2-D
+  y is auto-broadcast to 3-D in ``TrialAwareDistribution.__init__``, but the
+  sampler still rejects it defensively.
 * ``"time_delta"`` — supported; the ±time_offsets window is dropped in
   multisession because relative time positions do not transfer meaningfully
   across sessions with heterogeneous ``ntime``.  Behaviour becomes joint
@@ -34,7 +35,8 @@ User-facing invariants (validated at init):
 * all per-session y_continuous have the same feature dim ``nd``
 * if any session has ``y_discrete``: all must have the same sorted ``unique``
   class set (same values, same order)
-* no session is in Mode C (``_DISC_MODE_PER_TP_2D``)
+* no session is in Mode C (``_DISC_MODE_PER_TP_2D``) — defensive check;
+  unreachable via normal init since 2-D y is auto-broadcast to 3-D
 * all per-session distributions on the same device
 """
 
@@ -148,7 +150,9 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
             raise ValueError(f"all sessions must share the same y feature dim; got {nds}")
         self._nd = nds[0]
 
-        # Mode C is rejected in multisession
+        # Mode C defensive check: unreachable via normal init since 2-D y is
+        # auto-broadcast to 3-D in TrialAwareDistribution.__init__, but kept
+        # as a safety net in case distributions are constructed manually.
         for s, d in enumerate(per_session_dists):
             if getattr(d, "_disc_mode", None) == _DISC_MODE_PER_TP_2D:
                 raise ValueError(

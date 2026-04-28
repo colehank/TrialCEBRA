@@ -12,15 +12,27 @@
 ---
 
 ## 背景
-![Sampling schema](resources/sampling_schema.png)
+<div style="display: flex; gap: 2em; align-items: stretch;">
 
-CEBRA 原生的三种 conditional（`time`、`delta`、`time_delta`）均在扁平时间序列上操作，面对试次结构数据存在两个问题：
+<div style="flex: 1;">
+
+`CEBRA` 原生的三种 conditional（`time`、`delta`、`time_delta`）均在扁平时间序列上操作，面对试次结构数据存在两个问题：
 
 1. **跨试次边界伪影** —— 1D CNN 卷积跨越 trial 边缘，混淆刺激前后的神经活动。
 2. **无法利用 trial 层级结构** —— `delta` 在刺激嵌入空间中寻找最近邻时间点；当 trial 内所有时间点共享相同刺激嵌入时，退化为帧内采样，丢失跨 trial 对比信号。
 
 `trial_cebra` 通过将正样本选取提升至 trial 层级解决上述问题。
+- **time conditional**：正样本来自随机选取的目标 trial，时间位置对齐到 anchor 的相对位置附近。
+- **delta conditional**：正样本来自基于 trial 辅助变量的 Gaussian 相似度选定的 trial 内，时间位置均匀随机。
+- **time_delta conditional**：正样本来自基于 trial 辅助变量的 Gaussian 相似度选定的 trial 内，时间位置对齐到 anchor 的相对位置附近。
 
+</div>
+
+<div style="flex: 1; display: flex; align-items: stretch;">
+  <img src="resources/sampling_schema.png" 
+       style="width: 100%; height: 100%; object-fit: contain;" />
+</div>
+</div>
 ---
 
 ## 安装
@@ -112,7 +124,7 @@ target_trial = argmin_j  dist(query, y[j]),  j ≠ anchor
 
 * **Mode A** —— `y_discrete` 是 per-trial（trial 内不变）：候选限于与 anchor 同 class 的 trial。
 * **Mode B** —— `y_discrete` 是 per-timepoint **且** `y` 是 3-D：`trial_emb_per_class[c][trial] = mean(y[trial, t] for t where class(trial,t) == c)`，anchor 用自己 class 对应的基底查询。
-* **Mode C** —— `y_discrete` 是 per-timepoint 但 `y` 仅为 2-D：init 时发出 warning，trial 选择降级为 class-agnostic（同类约束仍在 timepoint 阶段执行）。要启用完整 class-conditional，请改传 3-D `y`。
+* **Mode C** —— `y_discrete` 是 per-timepoint 但 `y` 仅为 2-D：2-D `y` 会自动沿时间轴 broadcast 为 `(ntrial, ntime, nd)`（各时间点 embedding 相同），再走 Mode B 聚合。常量 tensor 的 per-class 均值等于原始值，因此 trial 选择等效于 class-agnostic，但走的是 class-conditional 代码路径，无 warning。
 
 所有模式都会在 `argmin` 之前给 `dists` 加极小 Gumbel 扰动以随机化打破并列（例如所有 trial 的 class-c 嵌入相同时——pre-stim 灰屏标签的典型情况）。
 
@@ -158,27 +170,27 @@ query   = y[trial_i, rel_i] + N(0, δ²I) / √d
 
 ![采样时间线](resources/fig_sampling.png)
 
-每个采样帧按 trial 内绝对时间标注于时间轴。绿色高亮区域为 ±`time_offsets` 时间窗。
+每个采样帧在完整 trial 时间轴上展示。绿色带标记 anchor 相对位置附近的 ±`time_offsets` 窗口。
 
 ---
 
 ## 学习到的嵌入
 
-6 种 conditional（3 种原生 + 3 种 trial-aware）在相同 MEG 数据集上训练。点颜色按 **trial 内时间**编码。
+在同一 MEG 数据集上训练全部 6 种 conditional（3 个原生 CEBRA + 3 个 trial-aware）。点按 **trial 内时间**着色。
 
-### 3D 嵌入（按时间着色）
+### 按时间着色的 3D 嵌入
 
 ![3D 嵌入](resources/fig_3d_embeddings.png)
 
-**原生 CEBRA（上排）：** `time` — 均匀球面，无时间结构。`delta` — 刺激内容主导，trial 内结构扁平。`time_delta` — 弱时间梯度。
+**原生 CEBRA（上排）**：`time` — 均匀球面，无时间结构。`delta` — 刺激内容主导，trial 内扁平结构。`time_delta` — 弱时间梯度。
 
-**Trial-aware TrialCEBRA（下排）：** `time` — 跨 trial 对齐产生的时间环。`delta` — 刺激相似度驱动的 trial 聚类。`time_delta` — 最清晰的潜伏期结构。
+**Trial-aware TrialCEBRA（下排）**：`time` — 跨 trial 对齐形成时间环。`delta` — 按刺激相似度干净聚类。`time_delta` — 最清晰的逐时延结构。
 
-### 训练损失曲线
+### 训练损失
 
-![训练损失](resources/fig_loss.png)
+![损失曲线](resources/fig_loss.png)
 
-所有 conditional 均平稳收敛。Trial-aware conditional 初始损失较高（对比任务更难），最终收敛至与原生 CEBRA 相当的水平。
+所有 conditional 均平滑收敛。Trial-aware conditional 起始损失更高（对比任务更丰富），最终收敛到与原生 conditional 相近水平。
 
 ---
 
@@ -231,12 +243,60 @@ model.fit(X, y_disc, y_cont)   # 自动检测 list-of-arrays 进入 multisession
 - **≥ 2 个 session**；允许 `(ntrial_s, ntime_s, nneuro_s)` 异构
 - 所有 session 共享相同的连续 y 特征维度 `nd`
 - 提供 `y_discrete` 时所有 session 必须共享**完全相同的 sorted unique class 集合**
-- multisession 下**禁止 Mode C**（per-timepoint 离散 + 2-D 连续）——必须每 session 都传 3-D `y_continuous`
+- **Mode C**（per-timepoint 离散 + 2-D 连续）：2-D y 自动 broadcast 为 3-D，multisession 下透明支持，无限制。
 - 严格跨 session：每个 positive 都来自 ≠ anchor 所在 session 的 session（按 batch 位置对 session 轴做 derangement）
 
 ### `sample_exclude_intrial` 在 multisession 下
 
 sampler 层已严格保证跨 session，单 session 的 `sample_exclude_intrial` 在此被覆盖。每 session 的 `TrialAwareDistribution` 内部用 `sample_exclude_intrial=False` 避免双重屏蔽。
+
+---
+
+## 输入格式与行为
+
+### 标签类型识别
+
+TrialCEBRA 根据 `dtype` 自动分类输入标签：
+
+| dtype | 分类 | 用途 |
+|---|---|---|
+| `float32` / `float64` | 连续变量 | `delta` / `time_delta` 的 trial embedding |
+| `int32` / `int64` / `uint` | 离散变量 | 类别标签，用于 balanced prior + 同类约束 |
+
+**规则：**
+- 最多传入一个连续标签和一个离散标签
+- 多个连续或多个离散标签会报错
+- `fit(*y)` 中标签的顺序无关 — 分类自动进行
+
+### 连续 `y` 的形状解析
+
+提供多种形状时，`TrialCEBRA` 为每个 conditional 选择合适的：
+
+| conditional | 优先形状 | 备选 | 行为 |
+|---|---|---|---|
+| `"delta"` | `(ntrial, ntime, nd)` 3-D | `(ntrial, nd)` 2-D | 3-D 启用 Mode B 类条件 trial 选择；`y_discrete` 为 per-timepoint 时 2-D 自动 broadcast |
+| `"time_delta"` | `(ntrial, ntime, nd)` 3-D | — | 必须 3-D |
+| `"time"` | 不使用 | — | 忽略所有连续 y |
+
+### 离散标签 Prior
+
+提供 `y_discrete` 时，anchor 采样分布由 `sample_prior` 控制：
+
+| `sample_prior` | 行为 |
+|---|---|
+| `"balanced"`（默认） | 先均匀选类别，再在类内均匀采样 → 少数类过采样 `1 / class_freq` 倍 |
+| `"uniform"` | 在所有时间点均匀采样 → anchor 类别分布与实际频率一致 |
+
+严重不平衡数据集应使用 `"uniform"`，避免过采样扭曲 prior。
+
+### 2-D vs 3-D 输入
+
+| 输入形状 | 行为 |
+|---|---|
+| `X` 为 2-D `(N, nneuro)` | 原生 CEBRA 行为（除非手动提供 `trial_starts` / `trial_ends`，否则跳过 trial-aware 路径）|
+| `X` 为 3-D `(ntrial, ntime, nneuro)` | 激活 trial-aware：flatten 为 2-D，附加 trial 元数据，替换为 `TrialAwareDistribution` |
+
+**Conditional 名称解析**：`"time"`、`"delta"`、`"time_delta"` 在 CEBRA 原生和 TrialCEBRA trial-aware 之间共享。区分依据是 dataset 上是否存在 trial 元数据（`trial_starts` / `trial_ends`）— 仅当元数据存在时才激活 trial-aware 行为。
 
 ---
 
@@ -253,6 +313,7 @@ TrialCEBRA(
     delta: float,                        # trial 相似度匹配的 Gaussian 噪声标准差
     sample_fix_trial: bool = False,      # 在 init 时预计算 trial→trial 映射
     sample_exclude_intrial: bool = True, # 排除 anchor 所在 trial 进行正样本采样
+    sample_prior: str = "balanced",      # "balanced" 或 "uniform"；提供 y_discrete 时控制 anchor 采样
     **cebra_kwargs,
 )
 
@@ -278,8 +339,10 @@ dist = TrialAwareDistribution(
     ntime                  = 50,
     conditional            = "delta",
     y                      = torch.randn(40, 16),   # (ntrial, nd)
+    y_discrete             = None,                  # 可选离散标签 (ntrial*ntime,)
     sample_fix_trial       = False,
     sample_exclude_intrial = True,
+    sample_prior           = "balanced",            # "balanced" 或 "uniform"
     time_offsets           = 10,
     delta                  = 0.3,
     device                 = "cpu",

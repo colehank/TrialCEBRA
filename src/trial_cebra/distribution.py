@@ -58,9 +58,12 @@ Discrete-first principle (only ``"delta"`` path):
       ``trial_emb_per_class[c][trial] = mean(y[trial, t]
       for t where class(trial,t) == c)``; the anchor uses its own class's
       basis to query trials.
-    * Mode C — discrete is per-timepoint but ``y`` is only 2-D: a warning
-      is emitted at init and trial selection falls back to class-agnostic
-      ``trial_emb`` (same-class still applied at the timepoint stage).
+    * Mode C — discrete is per-timepoint but ``y`` is only 2-D: the 2-D y is
+      automatically broadcast to 3-D ``(ntrial, ntime, nd)`` by repeating each
+      trial's embedding across all timepoints, then Mode B aggregation is applied.
+      Per-class mean of a constant-within-trial tensor equals the original value,
+      so trial selection is identical to a class-agnostic query but with the
+      class-conditional code path active.  No warning is emitted.
 
   In all modes a tiny Gumbel perturbation is added to ``dists`` before
   ``argmin`` to break ties stochastically (e.g., when all trials share the
@@ -68,8 +71,9 @@ Discrete-first principle (only ``"delta"`` path):
 
 y semantics:
   ``"delta"``      — 2-D ``(ntrial, nd)`` (per-trial) or 3-D
-                     ``(ntrial, ntime, nd)`` (per-timepoint).  3-D is
-                     required for Mode B class-conditional trial selection.
+                     ``(ntrial, ntime, nd)`` (per-timepoint).  When
+                     ``y_discrete`` is per-timepoint and ``y`` is 2-D, ``y``
+                     is silently broadcast to 3-D for Mode B aggregation.
   ``"time_delta"`` — 3-D ``(ntrial, ntime, nd)``;  ``trial_emb = y[:, 0, :]``
                      (trial-onset embedding, no mean aggregation).
 
@@ -199,13 +203,17 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
                     f"(ntrial={ntrial}, ntime={ntime}, nd); got {tuple(y.shape)}."
                 )
             y = y.to(device)
-            self._y_delta_3d = (
-                y if y.ndim == 3 else None
-            )  # only kept for Mode B; cleared after init
-            if y.ndim == 2:
-                self.trial_emb = y  # (ntrial, nd)
-            else:
+            if y.ndim == 3:
+                self._y_delta_3d = y
                 self.trial_emb = y.mean(dim=1)  # (ntrial, nd) — class-agnostic mean
+            else:
+                # 2-D y: repeat along time axis so _build_class_conditional_state
+                # can compute per-class trial embeddings (Mode B) instead of
+                # falling back to class-agnostic Mode C.  Per-class mean of a
+                # constant tensor equals the tensor itself, so trial selection
+                # is identical to Mode C but class-conditional.
+                self._y_delta_3d = y.unsqueeze(1).expand(ntrial, ntime, -1)
+                self.trial_emb = y  # (ntrial, nd)
 
         elif conditional == "time_delta":
             if y is None or y.ndim != 3 or y.shape[:2] != (ntrial, ntime):
@@ -250,7 +258,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             # Class-conditional structures for delta path.
             # Mode A (per_trial):     each trial constant class    -> filter trials by class
             # Mode B (per_tp_3d):     class varies + 3-D y         -> trial_emb_per_class
-            # Mode C (per_tp_2d):     class varies + 2-D y         -> warn, fall back
+            # Mode C (per_tp_2d):     class varies + 2-D y         -> auto-broadcast to 3-D, Mode B
             self._disc_mode = self._build_class_conditional_state(yd, conditional, device)
         else:
             self._disc_mode = _DISC_MODE_NONE
@@ -276,8 +284,20 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
                     anchor_cls = torch.full_like(all_trials, int(c_val.item()))
                     locked[ci] = self._class_conditional_trial_select(all_trials, anchor_cls)
                 self._locked_target_trials_per_class = locked
+            elif self._disc_mode != _DISC_MODE_NONE:
+                # time_delta + y_discrete (any mode): per-class locked targets via
+                # class-filtered y-similarity.  For each class c, restrict candidates
+                # to trials that contain ≥1 timepoint of class c, then pick the
+                # most y-similar trial via _delta_trial_select.
+                locked = torch.zeros(self._n_classes, ntrial, dtype=torch.long, device=device)
+                yd_2d = self._y_discrete.view(ntrial, ntime)
+                for ci in range(self._n_classes):
+                    c_val = self._classes_sorted[ci]
+                    has_c = (yd_2d == c_val).any(dim=1)  # (ntrial,) valid target trials
+                    locked[ci] = self._delta_trial_select(all_trials, valid_trials_mask=has_c)
+                self._locked_target_trials_per_class = locked
             else:
-                # Native behavior: class-agnostic trial_emb-based selection
+                # No y_discrete: class-agnostic trial_emb-based selection
                 self._locked_target_trials = self._delta_trial_select(all_trials)
 
     # ------------------------------------------------------------------
@@ -483,10 +503,11 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
     def _sample_time(self, ref: torch.Tensor) -> torch.Tensor:
         ref_trial = ref // self.ntime
         ref_rel = ref % self.ntime
-        target_trial = self._select_trial_uniform(ref_trial)
         if hasattr(self, "_y_discrete"):
             anchor_class = self._y_discrete[ref]
+            target_trial = self._select_trial_uniform_classaware(ref_trial, ref_rel, anchor_class)
             return self._window_sample_classaware(target_trial, ref_rel, anchor_class)
+        target_trial = self._select_trial_uniform(ref_trial)
         return self._window_sample(target_trial, ref_rel)
 
     def _sample_delta(self, ref: torch.Tensor) -> torch.Tensor:
@@ -523,9 +544,13 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         ref_trial = ref // self.ntime
         ref_rel = ref % self.ntime
         if self.sample_fix_trial:
-            target_trial = self._locked_target_trials[ref_trial]
-            query = self._y_flat[ref]  # (B, nd)
             anchor_class = self._y_discrete[ref] if hasattr(self, "_y_discrete") else None
+            if hasattr(self, "_locked_target_trials_per_class"):
+                class_idx = self._class_value_to_idx(anchor_class)
+                target_trial = self._locked_target_trials_per_class[class_idx, ref_trial]
+            else:
+                target_trial = self._locked_target_trials[ref_trial]
+            query = self._y_flat[ref]  # (B, nd)
             return self._window_argmin(target_trial, ref_rel, query, anchor_class=anchor_class)
         else:
             return self._joint_argmin(ref, ref_trial, ref_rel)
@@ -534,19 +559,23 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
     # Trial selection helpers
     # ------------------------------------------------------------------
 
-    def _delta_trial_select(self, ref_trial_ids: torch.Tensor) -> torch.Tensor:
+    def _delta_trial_select(
+        self,
+        ref_trial_ids: torch.Tensor,
+        valid_trials_mask: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Select target trial via Gaussian-noise delta query on trial_emb.
 
         For ``sample_exclude_intrial=True`` (default), uses argmin after self
         masking — closest cross-trial neighbour wins. For ``sample_exclude_intrial=False``,
         uses Gumbel-max stochastic sampling (softmax(-dists/T) with T=delta)
-        instead of argmin. The argmin would otherwise return self with very
-        high probability in high-dim because Gaussian noise of std ``delta``
-        is mostly orthogonal to inter-trial offsets and cannot escape
-        self-similarity, leading to a degenerate positive sampling that
-        collapses the embedding. Stochastic selection biases toward similar
-        trials but does not pin to self, providing a meaningful contrastive
-        signal.
+        instead of argmin.
+
+        Args:
+            valid_trials_mask: Optional ``(ntrial,)`` bool mask. When provided,
+                only trials where the mask is True are eligible targets. Falls
+                back to unconstrained selection (minus self) if no valid + non-self
+                candidate exists for a given anchor.
         """
         B = ref_trial_ids.size(0)
         mean = self.trial_emb[ref_trial_ids]  # (B, nd)
@@ -558,8 +587,23 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             mask = torch.zeros(B, self.ntrial, dtype=torch.bool, device=self.device)
             mask.scatter_(1, ref_trial_ids.unsqueeze(1), True)
             dists = dists.masked_fill(mask, float("inf"))
+        if valid_trials_mask is not None:
+            dists = dists.masked_fill(~valid_trials_mask.unsqueeze(0), float("inf"))
+            # Fallback: if no valid candidate after class filtering, lift the class
+            # mask but keep self-exclusion so we always return a finite result.
+            no_valid = ~torch.isfinite(dists).any(dim=1)
+            if no_valid.any():
+                dists_fb = torch.cdist(query[no_valid], self.trial_emb)
+                if self.sample_exclude_intrial:
+                    mask_fb = torch.zeros(
+                        int(no_valid.sum()), self.ntrial, dtype=torch.bool, device=self.device
+                    )
+                    mask_fb.scatter_(1, ref_trial_ids[no_valid].unsqueeze(1), True)
+                    dists_fb = dists_fb.masked_fill(mask_fb, float("inf"))
+                dists[no_valid] = dists_fb
+        if self.sample_exclude_intrial or valid_trials_mask is not None:
             return dists.argmin(dim=1)
-        # excl=False: stochastic Gumbel-max sampling biased toward closer trials
+        # excl=False + no filter: stochastic Gumbel-max sampling biased toward closer trials
         T = max(float(self.delta), 1e-6)
         log_w = -dists / T  # (B, ntrial)
         gumbel = -torch.empty_like(log_w).exponential_(generator=self.generator).log()
@@ -578,7 +622,9 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         """Detect discrete mode and build supporting tensors for delta path.
 
         Returns one of ``_DISC_MODE_*``. Only delta uses the resulting state;
-        time / time_delta paths already enforce same-class via gumbel masking.
+        time enforces same-class at trial level via ``_select_trial_uniform_classaware``;
+        time_delta (fix_trial=False) enforces it via ``_joint_argmin``;
+        time_delta (fix_trial=True) gets per-class locked trials built in ``__init__``.
         """
         # Detect per-trial vs per-timepoint
         yd_2d = yd.view(self.ntrial, self.ntime)
@@ -617,14 +663,14 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             self._trial_emb_per_class = trial_emb_pc  # (n_classes, ntrial, nd)
             return _DISC_MODE_PER_TP_3D
 
-        # Mode C: per-timepoint discrete with only 2-D y -- cannot decompose
+        # Mode C: per-timepoint discrete with only 2-D y.
+        # Should not be reached: __init__ now broadcasts 2-D y to 3-D before
+        # calling _build_class_conditional_state, so _y_delta_3d is always set.
+        # Kept as a defensive fallback.
         warnings.warn(
-            "delta with per-timepoint y_discrete (varying within trial) and 2-D "
-            "y_continuous (per-trial) cannot compute class-conditional trial "
-            "embeddings. Trial selection will remain class-agnostic; the same-"
-            "class constraint still applies to positive sampling. For full "
-            "class-conditional trial selection, pass 3-D y_continuous of shape "
-            "(ntrial, ntime, nd).",
+            "delta with per-timepoint y_discrete and 2-D y_continuous: "
+            "unexpected code path (should have been broadcast in __init__). "
+            "Trial selection will be class-agnostic.",
             UserWarning,
             stacklevel=3,
         )
@@ -648,7 +694,8 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         * ``per_tp_3d`` — use ``_trial_emb_per_class[anchor_class]`` as the
           query basis; argmin cdist among all trials.
         * ``per_tp_2d_fallback`` — delegate to class-agnostic
-          ``_delta_trial_select`` (warning was emitted at init).
+          ``_delta_trial_select`` (defensive fallback; not reachable via normal
+          init since 2-D y is broadcast to 3-D in ``__init__``).
 
         A small Gumbel noise is added to dists before argmin to stochastically
         break ties (e.g., when all trials share the same class-c embedding,
@@ -730,6 +777,48 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             return (log_w + gumbel).argmax(dim=1)
         else:
             return self.randint(0, self.ntrial, (B,))
+
+    def _select_trial_uniform_classaware(
+        self,
+        ref_trial_ids: torch.Tensor,
+        ref_rel: torch.Tensor,
+        anchor_class: torch.Tensor,
+    ) -> torch.Tensor:
+        """Sample target trial uniformly, restricted to trials with ≥1 same-class
+        timepoint in the ±time_offsets window around ref_rel.
+
+        Falls back to unrestricted uniform (respecting sample_exclude_intrial) when
+        no valid trial exists for an anchor (e.g., rare class with very few trials).
+        """
+        B = ref_trial_ids.size(0)
+        dt_vec = torch.arange(-self.time_offsets, self.time_offsets + 1, device=self.device)
+        # (B, W) — clamped window positions for each anchor
+        t_pos = (ref_rel.unsqueeze(1) + dt_vec.unsqueeze(0)).clamp(0, self.ntime - 1)
+
+        # Build trial_valid (B, ntrial): True if ≥1 same-class timepoint in window.
+        # Iterate over W window offsets to avoid (B, ntrial, W) tensor.
+        all_trials = torch.arange(self.ntrial, device=self.device)
+        trial_valid = torch.zeros(B, self.ntrial, dtype=torch.bool, device=self.device)
+        for w in range(t_pos.shape[1]):
+            t_w = t_pos[:, w]  # (B,)
+            flat = all_trials.unsqueeze(0) * self.ntime + t_w.unsqueeze(1)  # (B, ntrial)
+            trial_valid |= self._y_discrete[flat] == anchor_class.unsqueeze(1)
+
+        log_w = torch.zeros(B, self.ntrial, device=self.device)
+        log_w = log_w.masked_fill(~trial_valid, float("-inf"))
+        if self.sample_exclude_intrial:
+            log_w.scatter_(1, ref_trial_ids.unsqueeze(1), float("-inf"))
+
+        # Fallback rows: no valid candidate after masking → allow all (minus self)
+        no_valid = ~torch.isfinite(log_w).any(dim=1)
+        if no_valid.any():
+            log_w_fb = torch.zeros(B, self.ntrial, device=self.device)
+            if self.sample_exclude_intrial:
+                log_w_fb.scatter_(1, ref_trial_ids.unsqueeze(1), float("-inf"))
+            log_w = torch.where(no_valid.unsqueeze(1), log_w_fb, log_w)
+
+        gumbel = -torch.empty_like(log_w).exponential_(generator=self.generator).log()
+        return (log_w + gumbel).argmax(dim=1)
 
     # ------------------------------------------------------------------
     # Within-trial window sampling

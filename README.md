@@ -109,7 +109,7 @@ target_trial = argmin_j  dist(query, y[j]),  j ≠ anchor
 
 * **Mode A** — `y_discrete` is per-trial (constant within each trial): candidates are restricted to trials that share the anchor's class.
 * **Mode B** — `y_discrete` is per-timepoint AND `y` is 3-D: `trial_emb_per_class[c][trial] = mean(y[trial, t] for t where class(trial, t) == c)`. The anchor uses its own class's basis.
-* **Mode C** — `y_discrete` is per-timepoint but `y` is only 2-D: a warning is emitted and trial selection falls back to class-agnostic `y`. To enable full class-conditional selection, pass 3-D `y`.
+* **Mode C** — `y_discrete` is per-timepoint but `y` is only 2-D: the 2-D `y` is automatically broadcast to `(ntrial, ntime, nd)` by repeating each trial's embedding across all timepoints, then Mode B aggregation is applied. Per-class mean of a constant-within-trial tensor equals the original value, so trial selection is equivalent to class-agnostic but uses the class-conditional code path. No warning is emitted.
 
 In all modes a tiny Gumbel perturbation is added before `argmin` to break ties stochastically (e.g., when all trials share the same class-c embedding, as happens for pre-stim gray-screen labels).
 
@@ -228,12 +228,60 @@ Alignment comes from the **cross-session query shuffle** (see `cebra.distributio
 - **≥ 2 sessions**; heterogeneous `(ntrial_s, ntime_s, nneuro_s)` allowed
 - All sessions share the same continuous y feature dim (`nd`)
 - If `y_discrete` is provided, all sessions must share the **same sorted unique class set**
-- **Mode C** (per-timepoint discrete + 2-D y_continuous) is **not allowed** in multisession — pass 3-D y_continuous for every session
+- **Mode C** (per-timepoint discrete + 2-D y_continuous): 2-D y is automatically broadcast to 3-D before building per-session distributions, so this is transparently handled. No restriction.
 - Strict cross-session: every positive comes from a session different from its anchor's (per-batch-position derangement of queries)
 
 ### `sample_exclude_intrial` in multisession
 
 At the sampler layer, cross-session is strict, so per-session `sample_exclude_intrial` is effectively superseded. Internally each per-session `TrialAwareDistribution` is built with `sample_exclude_intrial=False` to avoid redundant masking.
+
+---
+
+## Input Format and Behavior
+
+### Label Type Detection
+
+TrialCEBRA automatically classifies input labels by `dtype`:
+
+| dtype | Classification | Usage |
+|---|---|---|
+| `float32` / `float64` | Continuous variable | Trial embedding for `delta` / `time_delta` |
+| `int32` / `int64` / `uint` | Discrete variable | Class labels for balanced prior + same-class constraint |
+
+**Rules:**
+- At most one continuous and one discrete label can be passed
+- Multiple continuous or multiple discrete labels will raise an error
+- Label order in `fit(*y)` does not matter — classification is automatic
+
+### Shape Resolution for Continuous `y`
+
+When multiple shapes are provided, `TrialCEBRA` selects the appropriate one for each conditional:
+
+| conditional | Preferred shape | Fallback | Behavior |
+|---|---|---|---|
+| `"delta"` | `(ntrial, ntime, nd)` 3-D | `(ntrial, nd)` 2-D | 3-D enables Mode B class-conditional trial selection; 2-D is auto-broadcast when `y_discrete` is per-timepoint |
+| `"time_delta"` | `(ntrial, ntime, nd)` 3-D | — | Must be 3-D |
+| `"time"` | not used | — | Ignores all continuous y |
+
+### Discrete Label Prior
+
+When `y_discrete` is provided, the anchor sampling distribution is controlled by `sample_prior`:
+
+| `sample_prior` | Behavior |
+|---|---|
+| `"balanced"` (default) | Uniform over classes, then uniform within class → oversamples minority classes by `1 / class_freq` |
+| `"uniform"` | Uniform over all timepoints → anchor class distribution matches empirical frequencies |
+
+Use `"uniform"` for severely imbalanced datasets where oversampling would distort the prior.
+
+### 2-D vs 3-D Input
+
+| Input shape | Behavior |
+|---|---|
+| `X` is 2-D `(N, nneuro)` | Native CEBRA behavior (trial-aware path is skipped unless `trial_starts` / `trial_ends` are manually provided) |
+| `X` is 3-D `(ntrial, ntime, nneuro)` | Trial-aware path activated: flattens to 2-D, attaches trial metadata, swaps in `TrialAwareDistribution` |
+
+**Conditional name resolution**: `"time"`, `"delta"`, `"time_delta"` are shared between CEBRA native and TrialCEBRA trial-aware. The distinction is made by checking for trial metadata (`trial_starts` / `trial_ends`) on the dataset — trial-aware behavior only activates when this metadata is present.
 
 ---
 
@@ -250,6 +298,7 @@ TrialCEBRA(
     delta: float,                        # Gaussian noise std for trial similarity matching
     sample_fix_trial: bool = False,      # pre-compute trial→trial mapping at init
     sample_exclude_intrial: bool = True, # exclude anchor's own trial from positive sampling
+    sample_prior: str = "balanced",      # "balanced" or "uniform"; controls anchor sampling when y_discrete is provided
     **cebra_kwargs,
 )
 
@@ -275,8 +324,10 @@ dist = TrialAwareDistribution(
     ntime                  = 50,
     conditional            = "delta",
     y                      = torch.randn(40, 16),   # (ntrial, nd)
+    y_discrete             = None,                  # optional discrete labels (ntrial*ntime,)
     sample_fix_trial       = False,
     sample_exclude_intrial = True,
+    sample_prior           = "balanced",            # "balanced" or "uniform"
     time_offsets           = 10,
     delta                  = 0.3,
     device                 = "cpu",

@@ -562,12 +562,91 @@ class TestDiscrete:
         pos = d.sample_conditional(ref)
         assert (y_disc[pos] == y_disc[ref]).all()
 
+    def test_time_delta_fix_trial_trial_selection_is_class_constrained(self):
+        """time_delta fix_trial=True + y_discrete: the LOCKED TARGET TRIAL must
+        belong to the same-class partition as the anchor trial.
+
+        Use per-trial constant class labels so trial membership is unambiguous.
+        """
+        ntrial, ntime, nd = 10, 20, 4
+        # First 5 trials = class 0, last 5 = class 1 (constant within each trial)
+        y_disc = torch.zeros(ntrial * ntime, dtype=torch.long)
+        for t in range(5, ntrial):
+            y_disc[t * ntime : (t + 1) * ntime] = 1
+        y3d = torch.randn(ntrial, ntime, nd)
+
+        d = TrialAwareDistribution(
+            ntrial=ntrial,
+            ntime=ntime,
+            conditional="time_delta",
+            y=y3d,
+            y_discrete=y_disc,
+            sample_fix_trial=True,
+            sample_exclude_intrial=True,
+            time_offsets=3,
+            seed=42,
+        )
+        assert hasattr(d, "_locked_target_trials_per_class"), (
+            "expected per-class locked trials for time_delta + y_discrete"
+        )
+
+        ref = torch.arange(ntrial * ntime).repeat(10)
+        pos = d.sample_conditional(ref)
+
+        pos_trial = pos // ntime
+        ref_class = y_disc[ref]
+        pos_class = y_disc[pos]
+
+        assert (pos_class == ref_class).all(), "same-class timepoint constraint violated"
+        pos_trial_class = y_disc[pos_trial * ntime]  # constant-within-trial
+        assert (pos_trial_class == ref_class).all(), (
+            "time_delta fix_trial chose a wrong-class locked trial"
+        )
+
     def test_cross_trial_still_enforced_with_discrete(self):
         """Class constraint must not weaken cross-trial exclusion."""
         d = self._dist_disc("time", sample_exclude_intrial=True, seed=5)
         ref = torch.arange(NTRIAL * NTIME)
         pos = d.sample_conditional(ref)
         assert (ref // NTIME != pos // NTIME).all()
+
+    def test_time_trial_selection_is_class_constrained(self):
+        """time + y_discrete: the selected TARGET TRIAL must have >=1 same-class
+        timepoint in the ±time_offsets window, not just the final timepoint.
+
+        Use per-trial constant class labels so it is easy to check: anchors
+        from class-0 trials must land on class-0 trials, and vice versa.
+        """
+        ntrial, ntime = 10, 20
+        # First 5 trials = class 0, last 5 = class 1 (constant within each trial)
+        y_disc = torch.zeros(ntrial * ntime, dtype=torch.long)
+        for t in range(5, ntrial):
+            y_disc[t * ntime : (t + 1) * ntime] = 1
+
+        d = TrialAwareDistribution(
+            ntrial=ntrial,
+            ntime=ntime,
+            conditional="time",
+            y_discrete=y_disc,
+            sample_exclude_intrial=True,
+            time_offsets=3,
+            seed=99,
+        )
+        # Sample many times to reduce flakiness
+        ref = torch.arange(ntrial * ntime).repeat(20)
+        pos = d.sample_conditional(ref)
+
+        pos_trial = pos // ntime
+        ref_class = y_disc[ref]
+        pos_class = y_disc[pos]
+
+        # Final timepoint must be same class
+        assert (pos_class == ref_class).all(), "same-class timepoint constraint violated"
+        # Target trial must also be from the same-class partition
+        pos_trial_class = y_disc[pos_trial * ntime]  # class of that trial (constant)
+        assert (pos_trial_class == ref_class).all(), (
+            "time trial selection chose a wrong-class trial"
+        )
 
     def test_discrete_wrong_length_raises(self):
         y_disc = torch.zeros(NTRIAL * NTIME + 1, dtype=torch.long)
@@ -658,14 +737,17 @@ class TestClassConditionalDelta:
         # Class 1 emb per trial == stims (distinct per trial)
         assert torch.allclose(d._trial_emb_per_class[1], stims, atol=1e-5)
 
-    def test_mode_per_tp_2d_warns_and_falls_back(self):
-        """Per-timepoint discrete + 2-D y → warn + fall back to class-agnostic."""
-        from trial_cebra.distribution import _DISC_MODE_PER_TP_2D
+    def test_mode_per_tp_2d_auto_broadcasts_to_mode_b(self):
+        """Per-timepoint discrete + 2-D y → auto-broadcast to 3-D, no warning, Mode B."""
+        from trial_cebra.distribution import _DISC_MODE_PER_TP_3D
 
         yd = _binary_per_tp_disc()
-        with pytest.warns(UserWarning, match="cannot compute class-conditional"):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # any warning becomes an error
             d = _dist("delta", y_discrete=yd, delta=0.5)
-        assert d._disc_mode == _DISC_MODE_PER_TP_2D
+        assert d._disc_mode == _DISC_MODE_PER_TP_3D
 
     def test_per_trial_disc_target_is_same_class(self):
         """Mode A: target trial must always have same class as anchor's trial."""
