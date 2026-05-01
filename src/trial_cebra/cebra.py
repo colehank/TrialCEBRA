@@ -626,18 +626,14 @@ class TrialCEBRA(cebra.CEBRA):
                 f"({sorted(TRIAL_CONDITIONALS)}); got {self.conditional!r}. "
                 "For native CEBRA multisession, use cebra.CEBRA directly."
             )
-        if self.conditional == "time":
-            raise NotImplementedError(
-                "conditional='time' is not supported in multisession (matches "
-                "CEBRA native behaviour). Use 'delta' or 'time_delta'."
-            )
 
         # Per-session flatten (validates X/y shapes, returns a list of dicts)
         sessions = flatten_epochs_multisession(X, *y)
 
         # Separate discrete and continuous y per session.
-        # Trial-aware multisession requires continuous y (delta / time_delta);
-        # discrete is optional but if present must be in every session.
+        # Rules:
+        #   delta / time_delta: continuous y required; discrete optional.
+        #   time:               continuous y NOT required; discrete required.
         num_sessions = len(sessions)
         disc_list = [None] * num_sessions
         cont_list = [None] * num_sessions
@@ -653,11 +649,19 @@ class TrialCEBRA(cebra.CEBRA):
                         raise ValueError(f"session {s}: multiple continuous y; only one supported")
                     cont_list[s] = yf
 
-        if any(c is None for c in cont_list):
-            raise ValueError(
-                "multisession trial-aware fit requires continuous y for every "
-                "session (delta / time_delta)."
-            )
+        disc_only = all(c is None for c in cont_list)
+        if self.conditional in ("delta", "time_delta"):
+            if any(c is None for c in cont_list):
+                raise ValueError(
+                    "multisession trial-aware fit requires continuous y for every "
+                    f"session when conditional='{self.conditional}'."
+                )
+        elif self.conditional == "time":
+            if disc_only and any(d is None for d in disc_list):
+                raise ValueError(
+                    "conditional='time' in multisession requires y_discrete for every "
+                    "session (needed as the cross-session alignment signal)."
+                )
         # Discrete consistency: present in all or none
         disc_present = [d is not None for d in disc_list]
         if any(disc_present) and not all(disc_present):
@@ -676,13 +680,14 @@ class TrialCEBRA(cebra.CEBRA):
             tuple(np.asarray(yi_list[s]) for yi_list in y) for s in range(num_sessions)
         ]
 
-        # Hand off to CEBRA native fit with continuous-only y.  CEBRA's
-        # _prepare_data will build a DatasetCollection of SklearnDataset; our
-        # override below will attach trial metadata + discrete index per session.
         X_flat_list = [sess["X_flat"] for sess in sessions]
+        # For disc-only + "time": pass disc_list as y so CEBRA builds DatasetCollection
+        # with discrete_index.  Our _prepare_loader override intercepts before the native
+        # loader (DiscreteMultiSessionDataLoader) is actually used.
+        y_for_super = disc_list if disc_only else cont_list
         return super().fit(
             X_flat_list,
-            cont_list,
+            y_for_super,
             adapt=adapt,
             callback=callback,
             callback_frequency=callback_frequency,
@@ -804,7 +809,7 @@ class TrialCEBRA(cebra.CEBRA):
             sample_exclude_intrial=self.sample_exclude_intrial,
             sample_prior=self.sample_prior,
             time_offsets=time_offset,
-            delta=self.delta,
+            delta=self.delta if self.delta is not None else 0.1,
             device=str(loader.device),
         )
         loader.distribution = dist
@@ -839,8 +844,11 @@ class TrialCEBRA(cebra.CEBRA):
 
             # Continuous y: stored as sub_ds.continuous_index, flat
             # (ntrial_s * ntime_s, nd). Reshape to 3-D for delta/time_delta.
+            # May be None for disc-only + conditional="time".
             y_cont_flat = sub_ds.continuous_index
-            y_cont_3d = y_cont_flat.reshape(ntrial_s, ntime_s, -1)
+            y_cont_3d = (
+                y_cont_flat.reshape(ntrial_s, ntime_s, -1) if y_cont_flat is not None else None
+            )
 
             # Discrete y (if any), already attached to sub_ds by _prepare_data
             y_disc = sub_ds.__dict__.get("_discrete_index")
@@ -863,7 +871,7 @@ class TrialCEBRA(cebra.CEBRA):
                 sample_exclude_intrial=False,
                 sample_prior=self.sample_prior,
                 time_offsets=time_offset,
-                delta=self.delta,
+                delta=self.delta if self.delta is not None else 0.1,
                 device=str(sub_ds.device),
             )
             per_session_dists.append(dist_s)

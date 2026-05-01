@@ -77,19 +77,16 @@ class TestSamplerInit:
         with pytest.raises(ValueError, match=">= 2 sessions"):
             TrialAwareMultisessionSampler(d, conditional="delta", seed=0)
 
-    def test_time_conditional_raises(self):
-        # Build two sessions with conditional='time' for the dists, then attempt to
-        # create a multisession sampler with conditional='time' explicitly.
-        # Time has no y, so we can't even build TrialAwareDistribution with our helper;
-        # but the sampler raises NotImplementedError on conditional='time' before any
-        # validation of dists.
+    def test_time_conditional_no_disc_raises(self):
+        # "time" without y_discrete has no alignment signal → NotImplementedError
         d = _build_per_session_dists(
             [
-                {"ntrial": 8, "ntime": 20, "nd": 10, "seed": 0},
-                {"ntrial": 8, "ntime": 20, "nd": 10, "seed": 1},
-            ]
+                {"ntrial": 8, "ntime": 20, "nd": 10, "seed": 0, "with_disc": False},
+                {"ntrial": 8, "ntime": 20, "nd": 10, "seed": 1, "with_disc": False},
+            ],
+            conditional="time",
         )
-        with pytest.raises(NotImplementedError, match="time"):
+        with pytest.raises(NotImplementedError, match="y_discrete"):
             TrialAwareMultisessionSampler(d, conditional="time", seed=0)
 
     def test_unknown_conditional_raises(self):
@@ -449,11 +446,22 @@ class TestTrialCEBRAFitMultisession:
         model.fit(X, yd, yc)
         assert isinstance(model.distribution_, TrialAwareMultisessionSampler)
 
-    def test_fit_time_conditional_raises(self):
+    def test_fit_time_disc_only_runs(self):
+        """conditional='time' + y_disc-only multisession should now succeed."""
+        from trial_cebra.multisession import TrialAwareMultisessionSampler
+
         X, yd, _ = self._make_ms_data()
         model = self._base_model("time")
-        with pytest.raises(NotImplementedError, match="time"):
-            model.fit(X, yd)
+        model.fit(X, yd)
+        assert isinstance(model.distribution_, TrialAwareMultisessionSampler)
+        assert model.distribution_.conditional == "time"
+
+    def test_fit_time_no_disc_raises(self):
+        """conditional='time' without y_disc has no alignment signal → error."""
+        X, _, _ = self._make_ms_data()
+        model = self._base_model("time")
+        with pytest.raises((NotImplementedError, ValueError)):
+            model.fit(X)  # no labels at all
 
     def test_transform_per_session(self):
         X, yd, yc = self._make_ms_data()
@@ -479,8 +487,186 @@ class TestTrialCEBRAFitMultisession:
             model.fit(X, yd, yc_bad)
 
     def test_fit_raises_without_continuous_y(self):
-        """Trial-aware multisession requires continuous y."""
+        """Trial-aware multisession requires continuous y for delta/time_delta."""
         X, yd, _ = self._make_ms_data()
         model = self._base_model("delta")
         with pytest.raises(ValueError, match="continuous y"):
             model.fit(X, yd)  # only discrete, no continuous
+
+
+# ---------------------------------------------------------------------------
+# Disc-only multisession: conditional="time"
+# ---------------------------------------------------------------------------
+
+
+def _make_disc_only_sessions(num_sessions=2, ntrial=6, ntime=15, nneuro=12, n_classes=3, seed=0):
+    """Build num_sessions sessions of (X_3d, y_disc_flat) with shared class set."""
+    rng = np.random.default_rng(seed)
+    sessions = []
+    for s in range(num_sessions):
+        X = torch.from_numpy(rng.standard_normal((ntrial, ntime, nneuro)).astype("float32"))
+        classes = np.tile(np.arange(n_classes), ntrial // n_classes + 1)[:ntrial]
+        y_disc_per_trial = classes
+        y_disc_flat = np.repeat(y_disc_per_trial, ntime).astype(np.int64)
+        sessions.append((X, y_disc_flat, ntrial, ntime))
+    return sessions
+
+
+def _build_disc_only_dists(sessions, time_offsets=3):
+    """Build TrialAwareDistribution(conditional='time') per session."""
+    dists = []
+    for X, y_disc_flat, ntrial, ntime in sessions:
+        yd = torch.from_numpy(y_disc_flat).long()
+        d = TrialAwareDistribution(
+            ntrial=ntrial,
+            ntime=ntime,
+            conditional="time",
+            y=None,
+            y_discrete=yd,
+            sample_exclude_intrial=False,
+            time_offsets=time_offsets,
+        )
+        dists.append(d)
+    return dists
+
+
+class TestDiscOnlyMultisession:
+    """y_disc-only + conditional='time' multisession sampler."""
+
+    def test_sampler_init_succeeds(self):
+        sessions = _make_disc_only_sessions()
+        dists = _build_disc_only_dists(sessions)
+        sampler = TrialAwareMultisessionSampler(dists, conditional="time")
+        assert sampler.conditional == "time"
+        assert sampler.num_sessions == 2
+
+    def test_sampler_init_no_disc_raises(self):
+        """conditional='time' without y_discrete has no alignment signal → error."""
+        sessions = _make_disc_only_sessions()
+        dists_no_disc = []
+        for _, _, ntrial, ntime in sessions:
+            d = TrialAwareDistribution(ntrial=ntrial, ntime=ntime, conditional="time", y=None)
+            dists_no_disc.append(d)
+        with pytest.raises(NotImplementedError, match="y_discrete"):
+            TrialAwareMultisessionSampler(dists_no_disc, conditional="time")
+
+    def test_prior_shape(self):
+        sessions = _make_disc_only_sessions()
+        dists = _build_disc_only_dists(sessions)
+        sampler = TrialAwareMultisessionSampler(dists, conditional="time")
+        B = 32
+        prior = sampler.sample_prior(B)
+        assert prior.shape == (2, B)
+        for s, (_, _, ntrial, ntime) in enumerate(sessions):
+            assert prior[s].min() >= 0
+            assert prior[s].max() < ntrial * ntime
+
+    def test_positive_same_class(self):
+        sessions = _make_disc_only_sessions(ntrial=8, ntime=15, n_classes=3)
+        dists = _build_disc_only_dists(sessions, time_offsets=20)  # wide window
+        sampler = TrialAwareMultisessionSampler(dists, conditional="time")
+        B = 64
+        ref = sampler.sample_prior(B)
+        pos, idx_flat, _ = sampler.sample_conditional(ref)
+        for s in range(2):
+            _, y_disc_flat, ntrial, ntime = sessions[s]
+            for b in range(B):
+                # Which session does pos[s, b] come from?  It came from target session s.
+                # The anchor that produced this query may have come from a different session.
+                # Check the anchor that was mapped here via idx_flat.
+                pass
+        # Instead verify that for the anchor session, classes match after unshuffle.
+        # Easier: verify each pos[sp] has same class as the shuffled anchor.
+        pos_classes = np.empty((2, B), dtype=np.int64)
+        ref_classes = np.empty((2, B), dtype=np.int64)
+        for s in range(2):
+            _, y_disc_flat, ntrial, ntime = sessions[s]
+            pos_classes[s] = y_disc_flat[pos[s]]
+            ref_classes[s] = y_disc_flat[ref[s]]
+        # After shuffling, each anchor in session sp got a query from session s != sp.
+        # The shuffle is encoded in idx_flat. We just check that all positives
+        # have the same class as their post-shuffle anchor (class is what's shuffled).
+        ref_classes_flat = ref_classes.ravel()  # (S*B,)
+        pos_classes_flat = pos_classes.ravel()  # (S*B,) but pos is already in target session order
+        # idx_flat maps ref→pos: pos[idx_flat[i]] should have same class as ref[i].
+        # Equivalently: ref_classes_flat and pos_classes_flat[inverse] agree.
+        # Simple check: after unshuffling, anchor class == pos class.
+        idx_rev = _invert_index(idx_flat)
+        assert np.all(pos_classes_flat[idx_rev] == ref_classes_flat)
+
+    @pytest.mark.parametrize("time_offsets", [1, 5])
+    def test_positive_within_time_window(self, time_offsets):
+        ntrial, ntime = 8, 20
+        sessions = _make_disc_only_sessions(ntrial=ntrial, ntime=ntime, n_classes=2)
+        dists = _build_disc_only_dists(sessions, time_offsets=time_offsets)
+        sampler = TrialAwareMultisessionSampler(dists, conditional="time")
+        B = 128
+        ref = sampler.sample_prior(B)
+        pos, idx_flat, idx_rev_flat = sampler.sample_conditional(ref)
+        # For each anchor, check that pos rel_time is within ±time_offsets of anchor rel_time.
+        # anchor rel_time comes from the SOURCE session (before shuffle).
+        # pos rel_time is in the TARGET session.
+        # After unshuffle: anchor[s, b] was sent to session sp = (s + perm) % 2.
+        # Simpler: check that pos_rel and anchor_rel (post-shuffle) satisfy the window.
+        ref_rel = ref % ntime  # (2, B) — anchor's relative time in its session
+        pos_rel = pos % ntime  # (2, B) — positive's relative time in target session
+        # Flatten and apply derangement to get "shuffled anchor rel_time" per target session.
+        ref_rel_flat = ref_rel.ravel()
+        shuffled_ref_rel = ref_rel_flat[idx_flat].reshape(2, B)
+        diff = np.abs(pos_rel - shuffled_ref_rel)
+        # Allow fallback cases (class with no candidates in window) to exceed by checking
+        # that the vast majority satisfy the constraint.
+        assert (diff <= time_offsets).mean() >= 0.95
+
+    def test_cross_session_guarantee(self):
+        sessions = _make_disc_only_sessions(num_sessions=3, ntrial=6, ntime=10, n_classes=2)
+        dists = _build_disc_only_dists(sessions, time_offsets=5)
+        sampler = TrialAwareMultisessionSampler(dists, conditional="time")
+        B = 64
+        ref = sampler.sample_prior(B)
+        pos, idx_flat, _ = sampler.sample_conditional(ref)
+        # Verify that every positive in session sp did NOT come from session sp.
+        # (cross-session is enforced by the derangement: idx_flat ensures each element
+        # changes session.)  The sampler's _sample_conditional_time respects this.
+        # We verify via idx_flat: for each flat position i in [sp*B, (sp+1)*B),
+        # the source session is idx_flat[i] // B != sp.
+        S = 3
+        for sp in range(S):
+            for b in range(B):
+                flat_pos = sp * B + b
+                src_session = idx_flat[flat_pos] // B
+                assert src_session != sp
+
+    def test_trial_cebra_fit_disc_only_multisession(self):
+        """End-to-end: TrialCEBRA.fit with disc-only + conditional='time'."""
+        import trial_cebra
+
+        ntrial, ntime, nneuro, n_classes = 6, 12, 10, 3
+        sessions_data = _make_disc_only_sessions(
+            num_sessions=2, ntrial=ntrial, ntime=ntime, nneuro=nneuro, n_classes=n_classes
+        )
+        X_list = [s[0].numpy() for s in sessions_data]
+        # Pass per-trial disc labels (ntrial,) — flatten_epochs handles broadcasting
+        y_disc_list = [
+            np.tile(np.arange(n_classes), ntrial // n_classes + 1)[:ntrial].astype(np.int64)
+            for _ in range(2)
+        ]
+
+        model = trial_cebra.TrialCEBRA(
+            model_architecture="offset1-model",
+            batch_size=16,
+            max_iterations=3,
+            output_dimension=4,
+            conditional="time",
+            time_offsets=3,
+            device="cpu",
+            verbose=False,
+        )
+        model.fit(X_list, y_disc_list)
+        assert model.distribution_.num_sessions == 2
+        assert model.distribution_.conditional == "time"
+        for s in range(2):
+            X_flat = X_list[s].reshape(-1, nneuro)
+            emb = model.transform(X_flat, session_id=s)
+            assert emb.shape[0] == ntrial * ntime
+            assert emb.shape[1] == 4

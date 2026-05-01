@@ -24,15 +24,16 @@ Conditionals:
   multisession because relative time positions do not transfer meaningfully
   across sessions with heterogeneous ``ntime``.  Behaviour becomes joint
   argmin in y-space.
-* ``"time"`` — **not supported** in multisession, matching CEBRA's native
-  behaviour (``cebra.integrations.sklearn.cebra._init_loader`` rejects
-  multisession without a behavioural index).
+* ``"time"`` — **supported when ``y_discrete`` is provided for all sessions**.
+  Cross-session alignment: positive must be same class AND within ±time_offsets
+  of the anchor's relative time position.  Requires no continuous y.
+  Rejected when ``y_discrete`` is absent (no alignment signal).
 
 User-facing invariants (validated at init):
 
 * ``num_sessions >= 2``
 * all per-session distributions use the same ``conditional``
-* all per-session y_continuous have the same feature dim ``nd``
+* all per-session y_continuous have the same feature dim ``nd`` (not required for ``"time"``)
 * if any session has ``y_discrete``: all must have the same sorted ``unique``
   class set (same values, same order)
 * no session is in Mode C (``_DISC_MODE_PER_TP_2D``) — defensive check;
@@ -109,7 +110,7 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
             per session, constructed independently (each with its own
             ``ntrial_s / ntime_s / y_s``).  Trial-aware constraints apply
             inside each session.
-        conditional: ``"delta"`` or ``"time_delta"``.
+        conditional: ``"delta"``, ``"time_delta"``, or ``"time"`` (requires y_discrete).
         seed: integer seed for the numpy RNG used for cross-session shuffle.
     """
 
@@ -120,13 +121,17 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
         seed: Optional[int] = None,
     ):
         if conditional == "time":
-            raise NotImplementedError(
-                "conditional='time' is not supported in multisession. "
-                "Use 'delta' or 'time_delta'. This matches CEBRA's native behaviour."
-            )
-        if conditional not in ("delta", "time_delta"):
+            # "time" is allowed only when ALL sessions have y_discrete.
+            has_disc = [hasattr(d, "_y_discrete") for d in per_session_dists]
+            if not all(has_disc):
+                raise NotImplementedError(
+                    "conditional='time' in multisession requires y_discrete for all sessions "
+                    "(needed as the cross-session alignment signal). "
+                    "Provide y_discrete for every session or use 'delta'/'time_delta'."
+                )
+        elif conditional not in ("delta", "time_delta"):
             raise ValueError(
-                f"Unknown conditional {conditional!r}; expected 'delta' or 'time_delta'."
+                f"Unknown conditional {conditional!r}; expected 'delta', 'time_delta', or 'time'."
             )
         num_sessions = len(per_session_dists)
         if num_sessions < 2:
@@ -139,27 +144,30 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
                     f"session {s} has conditional={d.conditional!r}, expected {conditional!r}"
                 )
 
-        # All sessions have the same y feature dim (nd)
-        def _nd(d: TrialAwareDistribution) -> int:
-            if d.conditional == "time_delta":
-                return d._y_flat.shape[-1]
-            return d.trial_emb.shape[-1]
+        # All sessions have the same y feature dim (nd) — not applicable for "time"
+        if conditional != "time":
 
-        nds = [_nd(d) for d in per_session_dists]
-        if len(set(nds)) != 1:
-            raise ValueError(f"all sessions must share the same y feature dim; got {nds}")
-        self._nd = nds[0]
+            def _nd(d: TrialAwareDistribution) -> int:
+                if d.conditional == "time_delta":
+                    return d._y_flat.shape[-1]
+                return d.trial_emb.shape[-1]
 
-        # Mode C defensive check: unreachable via normal init since 2-D y is
-        # auto-broadcast to 3-D in TrialAwareDistribution.__init__, but kept
-        # as a safety net in case distributions are constructed manually.
-        for s, d in enumerate(per_session_dists):
-            if getattr(d, "_disc_mode", None) == _DISC_MODE_PER_TP_2D:
-                raise ValueError(
-                    f"session {s} is in Mode C (per-timepoint y_discrete + 2-D "
-                    f"y_continuous) which is not allowed in multisession. "
-                    f"Pass 3-D y_continuous for every session."
-                )
+            nds = [_nd(d) for d in per_session_dists]
+            if len(set(nds)) != 1:
+                raise ValueError(f"all sessions must share the same y feature dim; got {nds}")
+            self._nd = nds[0]
+        else:
+            self._nd = None
+
+        # Mode C defensive check: only relevant for delta/time_delta (not for "time")
+        if conditional != "time":
+            for s, d in enumerate(per_session_dists):
+                if getattr(d, "_disc_mode", None) == _DISC_MODE_PER_TP_2D:
+                    raise ValueError(
+                        f"session {s} is in Mode C (per-timepoint y_discrete + 2-D "
+                        f"y_continuous) which is not allowed in multisession. "
+                        f"Pass 3-D y_continuous for every session."
+                    )
 
         # If any session has y_discrete, all must have identical sorted class sets
         has_disc = [hasattr(d, "_y_discrete") for d in per_session_dists]
@@ -229,6 +237,8 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
     def sample_conditional(self, idx: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """Cross-session conditional sampling.
 
+        Dispatches to :py:meth:`_sample_conditional_time` for ``conditional='time'``.
+
         Algorithm (for ``delta`` / ``time_delta``):
 
         1. Per-session: ``compute_query(ref_s)`` produces ``(query_s, anchor_class_s)``.
@@ -260,6 +270,9 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
                 f"idx must have shape (num_sessions={self._num_sessions}, batch_size); "
                 f"got {idx.shape}"
             )
+        if self._conditional == "time":
+            return self._sample_conditional_time(idx)
+
         batch_size = idx.shape[1]
 
         # Step 1+2: compute queries per session
@@ -294,6 +307,48 @@ class TrialAwareMultisessionSampler(abc_.PriorDistribution, abc_.ConditionalDist
         for sp in range(self._num_sessions):
             ac_sp = ac_shuffled[sp] if has_classes else None
             pos_flat = self._dists[sp].search_given_query(shuffled[sp], anchor_class=ac_sp)
+            pos_idx[sp] = pos_flat.cpu().numpy()
+
+        idx_rev_flat = _invert_index(idx_flat)
+        return pos_idx, idx_flat, idx_rev_flat
+
+    def _sample_conditional_time(
+        self, idx: np.ndarray
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Cross-session conditional sampling for ``conditional='time'``.
+
+        Uses (rel_time, anchor_class) as the cross-session query.
+
+        Algorithm:
+          1. Per session: ``compute_query_time(ref_s)`` → ``(rel_time_s, anchor_class_s)``.
+          2. Strict cross-session derangement on the flat ``(S*B,)`` axis.
+          3. Shuffle rel_times and anchor_classes.
+          4. Per target session: ``search_given_query_time(rt, ac)`` returns positives.
+        """
+        batch_size = idx.shape[1]
+
+        rel_times = torch.empty(
+            self._num_sessions, batch_size, dtype=torch.long, device=self.device
+        )
+        anchor_classes = torch.empty(
+            self._num_sessions, batch_size, dtype=torch.long, device=self.device
+        )
+        for s in range(self._num_sessions):
+            ref_s = torch.from_numpy(idx[s]).to(self.device)
+            rt_s, ac_s = self._dists[s].compute_query_time(ref_s)
+            rel_times[s] = rt_s
+            anchor_classes[s] = ac_s
+
+        idx_flat = _strict_cross_session_permutation(self._num_sessions, batch_size, self._np_rng)
+
+        rt_flat = rel_times.reshape(self._num_sessions * batch_size)
+        ac_flat = anchor_classes.reshape(self._num_sessions * batch_size)
+        rt_shuffled = rt_flat[idx_flat].reshape(self._num_sessions, batch_size)
+        ac_shuffled = ac_flat[idx_flat].reshape(self._num_sessions, batch_size)
+
+        pos_idx = np.empty((self._num_sessions, batch_size), dtype=np.int64)
+        for sp in range(self._num_sessions):
+            pos_flat = self._dists[sp].search_given_query_time(rt_shuffled[sp], ac_shuffled[sp])
             pos_idx[sp] = pos_flat.cpu().numpy()
 
         idx_rev_flat = _invert_index(idx_flat)

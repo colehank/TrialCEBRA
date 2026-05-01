@@ -339,14 +339,14 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
     # ------------------------------------------------------------------
     # Multisession primitives: compute_query / search_given_query
     #
-    # These decouple the "build a y-space query from the anchor" step from the
+    # These decouple the "build a query from the anchor" step from the
     # "find a positive given a query" step, so the query can be shuffled across
     # sessions before searching in a target session (CEBRA multisession
     # philosophy).  Single-session ``sample_conditional`` is untouched.
     #
-    # Supported for ``conditional in {"delta", "time_delta"}`` only; ``"time"``
-    # has no continuous query to shuffle (CEBRA natively rejects time in
-    # multisession via ``_init_loader`` incompatible combinations).
+    # ``delta`` / ``time_delta``: y-space query via compute_query / search_given_query.
+    # ``time`` (y_discrete required): (rel_time, class) query via
+    #   compute_query_time / search_given_query_time.
     # ------------------------------------------------------------------
 
     def compute_query(self, ref: torch.Tensor):
@@ -362,8 +362,8 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         """
         if self.conditional == "time":
             raise NotImplementedError(
-                "compute_query is not supported for conditional='time'. "
-                "CEBRA natively rejects time in multisession."
+                "compute_query is not supported for conditional='time'; "
+                "use compute_query_time instead."
             )
         ref.size(0)
         ref_trial = ref // self.ntime
@@ -408,7 +408,10 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             ``(B,)`` positive flat-idx in ``[0, ntrial * ntime)``.
         """
         if self.conditional == "time":
-            raise NotImplementedError("search_given_query is not supported for conditional='time'.")
+            raise NotImplementedError(
+                "search_given_query is not supported for conditional='time'; "
+                "use search_given_query_time instead."
+            )
         B = query.size(0)
 
         if self.conditional == "delta":
@@ -495,6 +498,81 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
             dists = dists + scale * gumbel
             results.append(dists.argmin(dim=1))
         return torch.cat(results)
+
+    def compute_query_time(self, ref: torch.Tensor):
+        """Extract (rel_time, anchor_class) from anchor indices for cross-session 'time' shuffle.
+
+        Args:
+            ref: ``(B,)`` flat reference indices in this session.
+
+        Returns:
+            ``(rel_time, anchor_class)``:
+                rel_time: ``(B,)`` long — position within trial (``ref % ntime``).
+                anchor_class: ``(B,)`` long, or ``None`` when ``_y_discrete`` is absent.
+        """
+        rel_time = ref % self.ntime
+        anchor_class = self._y_discrete[ref] if hasattr(self, "_y_discrete") else None
+        return rel_time, anchor_class
+
+    def search_given_query_time(
+        self,
+        rel_time: torch.Tensor,
+        anchor_class: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Find positive flat-idx in THIS session given a (rel_time, class) query.
+
+        Designed for cross-session multisession use: queries arrive from a
+        different session and have already been shuffled. No own-trial exclusion
+        is applied — cross-session guarantee is enforced at the sampler layer.
+
+        Search priority (same class assumed throughout):
+          1. Same-class AND ``|t − rel_time| ≤ time_offsets`` — Gumbel-max uniform.
+          2. Same-class, any timepoint — fallback when time window has no candidates.
+          3. Any timepoint — last-resort fallback (should be unreachable in practice).
+
+        Args:
+            rel_time: ``(B,)`` long — relative time position within trial (0 … ntime-1).
+            anchor_class: ``(B,)`` long or ``None``.
+
+        Returns:
+            ``(B,)`` flat indices in ``[0, ntrial * ntime)``.
+        """
+        B = rel_time.size(0)
+        N = self.ntrial * self.ntime
+
+        all_rel = torch.arange(self.ntime, device=self.device).repeat(self.ntrial)  # (N,)
+
+        # time_mask: (B, N) — within ±time_offsets of rel_time
+        time_mask = (all_rel.unsqueeze(0) - rel_time.unsqueeze(1)).abs() <= self.time_offsets
+
+        if anchor_class is not None:
+            class_mask = self._y_discrete.unsqueeze(0) == anchor_class.unsqueeze(1)  # (B, N)
+            cand_mask = time_mask & class_mask
+        else:
+            cand_mask = time_mask
+
+        # Gumbel-max over valid candidates (uniform sample among True entries)
+        log_w = torch.zeros(B, N, device=self.device)
+        log_w = log_w.masked_fill(~cand_mask, float("-inf"))
+        gumbel = -torch.empty(B, N, device=self.device).exponential_(generator=self.generator).log()
+        pos_idx = (log_w + gumbel).argmax(dim=1)
+
+        # Fallback: class-only (no time constraint) for rows with empty window
+        no_cand = ~cand_mask.any(dim=1)
+        if no_cand.any() and anchor_class is not None:
+            log_w_fb = torch.zeros(B, N, device=self.device).masked_fill(~class_mask, float("-inf"))
+            gumbel_fb = (
+                -torch.empty(B, N, device=self.device).exponential_(generator=self.generator).log()
+            )
+            pos_fb = (log_w_fb + gumbel_fb).argmax(dim=1)
+            pos_idx = torch.where(no_cand, pos_fb, pos_idx)
+            # Last-resort: no same-class timepoint at all → any timepoint
+            no_class = ~class_mask.any(dim=1) & no_cand
+            if no_class.any():
+                pos_any = torch.randint(N, (B,), device=self.device, generator=self.generator)
+                pos_idx = torch.where(no_class, pos_any, pos_idx)
+
+        return pos_idx
 
     # ------------------------------------------------------------------
     # Per-conditional sampling (single-session)
