@@ -203,6 +203,17 @@ class TestTime:
         pos_rel = pos % NTIME
         assert (torch.abs(pos_rel.long() - ref_rel.long()) <= time_offsets).all()
 
+    def test_positive_at_exact_offset(self):
+        """Positive should be at exactly ref_rel + time_offsets (clamped at ntime-1)."""
+        time_offsets = 8
+        d = _dist("time", time_offsets=time_offsets)
+        ref = torch.arange(NTRIAL * NTIME)
+        pos = d.sample_conditional(ref)
+        ref_rel = ref % NTIME
+        pos_rel = pos % NTIME
+        expected_rel = torch.clamp(ref_rel + time_offsets, max=NTIME - 1)
+        assert (pos_rel == expected_rel).all()
+
     def test_positive_in_bounds(self):
         d = _dist("time")
         ref = torch.arange(NTRIAL * NTIME)
@@ -535,8 +546,19 @@ class TestDiscrete:
         assert ref.max().item() < NTRIAL * NTIME
 
     def test_same_class_conditional_time(self):
-        d = self._dist_disc("time", seed=1)
-        y_disc = _make_disc_y()
+        # Use per-trial constant class labels so that class at any t_pos in
+        # a target trial always matches the trial's class (no boundary conflict
+        # with fixed +offset sampling).
+        y_disc = torch.zeros(NTRIAL * NTIME, dtype=torch.long)
+        for t in range(NTRIAL // 2, NTRIAL):
+            y_disc[t * NTIME : (t + 1) * NTIME] = 1
+        d = TrialAwareDistribution(
+            ntrial=NTRIAL,
+            ntime=NTIME,
+            conditional="time",
+            y_discrete=y_disc,
+            seed=1,
+        )
         ref = torch.arange(NTRIAL * NTIME)
         pos = d.sample_conditional(ref)
         assert (y_disc[pos] == y_disc[ref]).all()

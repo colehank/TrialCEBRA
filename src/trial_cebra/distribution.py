@@ -542,8 +542,9 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
 
         all_rel = torch.arange(self.ntime, device=self.device).repeat(self.ntrial)  # (N,)
 
-        # time_mask: (B, N) — within ±time_offsets of rel_time
-        time_mask = (all_rel.unsqueeze(0) - rel_time.unsqueeze(1)).abs() <= self.time_offsets
+        # time_mask: (B, N) — exact +time_offsets position from rel_time
+        target_rel = (rel_time + self.time_offsets).clamp(max=self.ntime - 1)  # (B,)
+        time_mask = all_rel.unsqueeze(0) == target_rel.unsqueeze(1)  # (B, N)
 
         if anchor_class is not None:
             class_mask = self._y_discrete.unsqueeze(0) == anchor_class.unsqueeze(1)  # (B, N)
@@ -581,12 +582,41 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
     def _sample_time(self, ref: torch.Tensor) -> torch.Tensor:
         ref_trial = ref // self.ntime
         ref_rel = ref % self.ntime
-        if hasattr(self, "_y_discrete"):
-            anchor_class = self._y_discrete[ref]
-            target_trial = self._select_trial_uniform_classaware(ref_trial, ref_rel, anchor_class)
-            return self._window_sample_classaware(target_trial, ref_rel, anchor_class)
-        target_trial = self._select_trial_uniform(ref_trial)
-        return self._window_sample(target_trial, ref_rel)
+        # Fixed positive position: exactly ref_rel + time_offsets in the target trial.
+        t_pos = torch.clamp(ref_rel + self.time_offsets, max=self.ntime - 1)  # (B,)
+
+        if not hasattr(self, "_y_discrete"):
+            target_trial = self._select_trial_uniform(ref_trial)
+            return target_trial * self.ntime + t_pos
+
+        # With discrete labels: find trials where the class at t_pos matches anchor.
+        # Build valid(ntrial, B): class matches AND (excl=True → different trial).
+        anchor_class = self._y_discrete[ref]  # (B,)
+        B = ref.size(0)
+        trials = torch.arange(self.ntrial, device=self.device)  # (ntrial,)
+
+        flat = trials.unsqueeze(1) * self.ntime + t_pos.unsqueeze(0)  # (ntrial, B)
+        cls_at_t = self._y_discrete[flat]  # (ntrial, B)
+        class_match = cls_at_t == anchor_class.unsqueeze(0)  # (ntrial, B)
+
+        if self.sample_exclude_intrial:
+            not_same = trials.unsqueeze(1) != ref_trial.unsqueeze(0)  # (ntrial, B)
+            valid = class_match & not_same
+        else:
+            valid = class_match
+
+        u = torch.empty(self.ntrial, B, device=self.device).exponential_(generator=self.generator)
+        gumbel = -u.log()
+        gumbel = gumbel.masked_fill(~valid, float("-inf"))
+        chosen_trial = gumbel.argmax(dim=0)  # (B,)
+
+        # Fallback: no trial has matching class at t_pos → any valid trial (class ignored).
+        no_valid = ~valid.any(dim=0)
+        if no_valid.any():
+            chosen_trial = chosen_trial.clone()
+            chosen_trial[no_valid] = self._select_trial_uniform(ref_trial[no_valid])
+
+        return chosen_trial * self.ntime + t_pos
 
     def _sample_delta(self, ref: torch.Tensor) -> torch.Tensor:
         ref_trial = ref // self.ntime
@@ -700,7 +730,7 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         """Detect discrete mode and build supporting tensors for delta path.
 
         Returns one of ``_DISC_MODE_*``. Only delta uses the resulting state;
-        time enforces same-class at trial level via ``_select_trial_uniform_classaware``;
+        time enforces same-class at trial level via ``_sample_time`` (inline search);
         time_delta (fix_trial=False) enforces it via ``_joint_argmin``;
         time_delta (fix_trial=True) gets per-class locked trials built in ``__init__``.
         """
@@ -710,8 +740,8 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
 
         if conditional != "delta":
             # Other conditionals: discrete is enforced inside positive-sampling
-            # helpers (_window_sample_classaware, _trial_sample_classaware,
-            # _joint_argmin), no extra trial-level state required.
+            # helpers (_sample_time, _trial_sample_classaware, _joint_argmin),
+            # no extra trial-level state required.
             return _DISC_MODE_PER_TRIAL if is_per_trial else _DISC_MODE_PER_TP_3D
 
         if is_per_trial:
@@ -856,91 +886,14 @@ class TrialAwareDistribution(abc_.JointDistribution, abc_.HasGenerator):
         else:
             return self.randint(0, self.ntrial, (B,))
 
-    def _select_trial_uniform_classaware(
-        self,
-        ref_trial_ids: torch.Tensor,
-        ref_rel: torch.Tensor,
-        anchor_class: torch.Tensor,
-    ) -> torch.Tensor:
-        """Sample target trial uniformly, restricted to trials with ≥1 same-class
-        timepoint in the ±time_offsets window around ref_rel.
-
-        Falls back to unrestricted uniform (respecting sample_exclude_intrial) when
-        no valid trial exists for an anchor (e.g., rare class with very few trials).
-        """
-        B = ref_trial_ids.size(0)
-        dt_vec = torch.arange(-self.time_offsets, self.time_offsets + 1, device=self.device)
-        # (B, W) — clamped window positions for each anchor
-        t_pos = (ref_rel.unsqueeze(1) + dt_vec.unsqueeze(0)).clamp(0, self.ntime - 1)
-
-        # Build trial_valid (B, ntrial): True if ≥1 same-class timepoint in window.
-        # Iterate over W window offsets to avoid (B, ntrial, W) tensor.
-        all_trials = torch.arange(self.ntrial, device=self.device)
-        trial_valid = torch.zeros(B, self.ntrial, dtype=torch.bool, device=self.device)
-        for w in range(t_pos.shape[1]):
-            t_w = t_pos[:, w]  # (B,)
-            flat = all_trials.unsqueeze(0) * self.ntime + t_w.unsqueeze(1)  # (B, ntrial)
-            trial_valid |= self._y_discrete[flat] == anchor_class.unsqueeze(1)
-
-        log_w = torch.zeros(B, self.ntrial, device=self.device)
-        log_w = log_w.masked_fill(~trial_valid, float("-inf"))
-        if self.sample_exclude_intrial:
-            log_w.scatter_(1, ref_trial_ids.unsqueeze(1), float("-inf"))
-
-        # Fallback rows: no valid candidate after masking → allow all (minus self)
-        no_valid = ~torch.isfinite(log_w).any(dim=1)
-        if no_valid.any():
-            log_w_fb = torch.zeros(B, self.ntrial, device=self.device)
-            if self.sample_exclude_intrial:
-                log_w_fb.scatter_(1, ref_trial_ids.unsqueeze(1), float("-inf"))
-            log_w = torch.where(no_valid.unsqueeze(1), log_w_fb, log_w)
-
-        gumbel = -torch.empty_like(log_w).exponential_(generator=self.generator).log()
-        return (log_w + gumbel).argmax(dim=1)
-
     # ------------------------------------------------------------------
     # Within-trial window sampling
     # ------------------------------------------------------------------
 
     def _window_sample(self, target_trial: torch.Tensor, ref_rel: torch.Tensor) -> torch.Tensor:
-        """Sample uniformly within ±time_offsets of ref_rel inside target_trial."""
-        t_rel = torch.clamp(ref_rel, max=self.ntime - 1)
-        low = torch.clamp(t_rel - self.time_offsets, min=0)
-        high = torch.clamp(t_rel + self.time_offsets + 1, max=self.ntime)
-        offset = self._randint_range(low, high)
-        return target_trial * self.ntime + low + offset
-
-    def _window_sample_classaware(
-        self,
-        target_trial: torch.Tensor,
-        ref_rel: torch.Tensor,
-        anchor_class: torch.Tensor,
-    ) -> torch.Tensor:
-        """Gumbel-max over ±time_offsets window positions matching anchor_class.
-
-        Falls back to unconstrained :py:meth:`_window_sample` for anchors where
-        no same-class candidate exists in the target trial's window.
-        """
-        B = target_trial.size(0)
-        W = 2 * self.time_offsets + 1
-        dt_vec = torch.arange(-self.time_offsets, self.time_offsets + 1, device=self.device)
-
-        # t positions: (B, W)
-        t_pos = (ref_rel.unsqueeze(1) + dt_vec.unsqueeze(0)).clamp(0, self.ntime - 1)
-        flat_idx = target_trial.unsqueeze(1) * self.ntime + t_pos  # (B, W)
-        disc_match = self._y_discrete[flat_idx] == anchor_class.unsqueeze(1)  # (B, W)
-
-        gumbel = -torch.empty(B, W, device=self.device).exponential_(generator=self.generator).log()
-        gumbel = gumbel.masked_fill(~disc_match, float("-inf"))
-        best_w = gumbel.argmax(dim=1)  # (B,)
-        best_t = t_pos[torch.arange(B, device=self.device), best_w]  # (B,)
-
-        result = target_trial * self.ntime + best_t
-        no_match = ~disc_match.any(dim=1)
-        if no_match.any():
-            result = result.clone()
-            result[no_match] = self._window_sample(target_trial[no_match], ref_rel[no_match])
-        return result
+        """Return the fixed +time_offsets position inside target_trial (no y_discrete path)."""
+        t_pos = torch.clamp(ref_rel + self.time_offsets, max=self.ntime - 1)
+        return target_trial * self.ntime + t_pos
 
     def _trial_sample_classaware(
         self,
