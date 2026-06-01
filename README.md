@@ -17,6 +17,11 @@ Trial-aware contrastive learning for [CEBRA](https://cebra.ai). Pass 3-D epoch-f
 pip install TrialCEBRA
 ```
 
+or install from github
+```bash
+pip install git+https://github.com/colehank/trialCEBRA.git
+```
+
 ---
 
 ## Quick Start
